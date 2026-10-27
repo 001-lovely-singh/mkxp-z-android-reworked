@@ -65,8 +65,18 @@ RB_METHOD(MiniFFI_initialize) {
         hfunc = SDL_LoadFunction(hlib, RSTRING_PTR(func_a));
     }
 #endif
+#ifdef __ANDROID__
+    // AnyPlay: Windows games ask for kernel32/user32/etc. which don't exist on
+    // Android. Instead of raising (which crashes the game on startup), keep a
+    // "dummy" function: calling it does nothing and returns 0 / "".
+    if (!hfunc) {
+        rb_iv_set(self, "_dummy", Qtrue);
+        hfunc = 0;
+    }
+#else
     if (!hfunc)
         rb_raise(rb_eRuntimeError, "%s", SDL_GetError());
+#endif
     
     rb_iv_set(self, "_func", MVAL2RB((mffi_value)hfunc));
     rb_iv_set(self, "_funcname", func);
@@ -209,6 +219,20 @@ RB_METHOD(MiniFFI_call) {
         rb_raise(rb_eRuntimeError,
                  "wrong number of parameters: expected %d, got %d", nimport, items);
     
+#ifdef __ANDROID__
+    // AnyPlay: dummy Windows function -> ignore the call safely.
+    if (RTEST(rb_iv_get(self, "_dummy"))) {
+        switch (FIX2INT(own_exports)) {
+            case _T_POINTER:
+                return rb_utf8_str_new_cstr("");
+            case _T_BOOL:
+                return Qfalse;
+            default:
+                return MVAL2RB(0);
+        }
+    }
+#endif
+
     for (int i = 0; i < nimport; i++) {
         VALUE str = rb_ary_entry(args, i);
         mffi_value lParam = 0;
