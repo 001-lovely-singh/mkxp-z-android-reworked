@@ -1222,6 +1222,20 @@ static void mriBindingExecute() {
     
     mriBindingInit();
     
+#ifdef __ANDROID__
+    // AnyPlay: RPG Maker XP/VX/Ace ship with Zlib (and a few other standard
+    // libraries) already loaded, so games use them without "require".
+    // Load them up front; if one is missing, just carry on.
+    {
+        int reqState = 0;
+        rb_eval_string_protect(
+            "['zlib', 'stringio'].each { |l| begin; require l; rescue LoadError; end }",
+            &reqState);
+        if (reqState)
+            rb_set_errinfo(Qnil);
+    }
+#endif
+    
     std::string &customScript = conf.customScript;
     if (!customScript.empty())
         runCustomScript(customScript);
