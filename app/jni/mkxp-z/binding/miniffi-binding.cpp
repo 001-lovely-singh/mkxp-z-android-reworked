@@ -1,6 +1,8 @@
 // Most of the MiniFFI class was taken from Ruby 1.8's Win32API.c,
 // it's just as basic but should work fine for the moment
 
+#include <string>
+#include <cctype>
 #include <SDL.h>
 #include <cstdint>
 
@@ -227,8 +229,21 @@ RB_METHOD(MiniFFI_call) {
                 return rb_utf8_str_new_cstr("");
             case _T_BOOL:
                 return Qfalse;
-            default:
+            default: {
+                // Internet functions (wininet/winhttp) return a "handle"; 0 means
+                // "failed". Some games stop with an error on 0, so for those
+                // libraries pretend the call worked (downloads then simply
+                // come back empty). Everything else returns 0.
+                VALUE lib = rb_iv_get(self, "_libname");
+                if (!NIL_P(lib)) {
+                    std::string l = RSTRING_PTR(lib);
+                    for (auto &c : l) c = (char)tolower((unsigned char)c);
+                    if (l.find("wininet") != std::string::npos ||
+                        l.find("winhttp") != std::string::npos)
+                        return MVAL2RB(1);
+                }
                 return MVAL2RB(0);
+            }
         }
     }
 #endif
