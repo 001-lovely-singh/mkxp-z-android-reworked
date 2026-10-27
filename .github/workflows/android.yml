@@ -105,10 +105,18 @@ jobs:
       - name: Compile native deps — armeabi-v7a (32-bit)
         working-directory: app/jni
         run: |
+          # The dependency sources (pixman, openal, openssl, ruby...) are built IN-TREE and
+          # stay configured for the previous ABI (arm64). Without a clean, make thinks
+          # everything is already built and never creates build-armeabi-v7a/lib/*.
+          # `make clean` only removes the in-tree build state; build-arm64-v8a/ is kept.
+          make clean
           HOST=armv7a-linux-androideabi \
           TARGET=arm-linux-androideabi \
           ABI=armeabi-v7a \
           make -j$(nproc)
+          ls -la build-armeabi-v7a/lib | head -30
+          test -f build-armeabi-v7a/lib/libopenal.so
+          test -d build-arm64-v8a/lib
 
       # ── 9. Make Gradle wrapper executable ────────────────────────────────────
       - name: Grant execute permission for gradlew
