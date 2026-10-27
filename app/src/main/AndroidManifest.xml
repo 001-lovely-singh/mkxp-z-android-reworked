@@ -52,7 +52,7 @@
         <!-- Main activity -->
         <activity
             android:name=".MainActivity"
-            android:label="mkxp-z"
+            android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
@@ -89,7 +89,7 @@
         <!-- You can remove or disable this if not needed -->
         <activity-alias
             android:name="MainDebugActivity"
-            android:label="mkxp-z (Debug)"
+            android:label="@string/app_name"
             android:targetActivity=".MainActivity"
             android:exported="true"
         >
