@@ -94,6 +94,17 @@ jobs:
           # Asegurar mapeo de carpetas por si acaso
           if [ -d "build-arm64-v8a" ] && [ ! -d "build-arm64" ]; then ln -s build-arm64-v8a build-arm64; fi
 
+      # ── 8b. Compile native deps (armeabi-v7a, 32-bit phones) ─────────────────
+      # AnyPlay: added so the APK also runs on 32-bit ARM phones.
+      # (Application.mk and app/build.gradle already list armeabi-v7a.)
+      - name: Compile native deps — armeabi-v7a (32-bit)
+        working-directory: app/jni
+        run: |
+          HOST=armv7a-linux-androideabi \
+          TARGET=arm-linux-androideabi \
+          ABI=armeabi-v7a \
+          make -j$(nproc)
+
       # ── 9. Make Gradle wrapper executable ────────────────────────────────────
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -142,9 +153,13 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          cp "$APK" unsigned-release.apk
-          echo "APK_PATH=unsigned-release.apk" >> "$GITHUB_ENV"
+          # AnyPlay: prefer the universal APK (has both 64-bit and 32-bit libs);
+          # it is signed by Gradle (debug key, see app/build.gradle).
+          find app/build/outputs/apk/release -name "*.apk"
+          APK=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
+          if [ -z "$APK" ]; then APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1); fi
+          cp "$APK" anyplay-rgss-plugin.apk
+          echo "APK_PATH=anyplay-rgss-plugin.apk" >> "$GITHUB_ENV"
 
       # ── 13. Upload APK as artifact (always) ───────────────────────────────────
       - name: Upload APK artifact

@@ -70,6 +70,13 @@
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
 
+            <!-- AnyPlay: lets the AnyPlay app start a game by folder path.
+                 Intent action com.anyplay.rgss.LAUNCH + string extra "game_dir". -->
+            <intent-filter>
+                <action android:name="com.anyplay.rgss.LAUNCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
             <!-- mkxp-z Activity metadata -->
             <meta-data android:name="mkxp_debug" android:value="false" />
 

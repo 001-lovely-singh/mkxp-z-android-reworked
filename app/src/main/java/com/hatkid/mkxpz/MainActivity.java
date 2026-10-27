@@ -18,6 +18,7 @@ import android.os.storage.OnObbStateChangeListener;
 import android.net.Uri;
 import android.provider.Settings;
 import android.util.Log;
+import android.widget.Toast;
 import java.util.Locale;
 import java.io.File;
 
@@ -35,6 +36,14 @@ public class MainActivity extends SDLActivity
     private static String GAME_PATH = GAME_PATH_DEFAULT;
     private static String OBB_MAIN_FILENAME;
     private static boolean DEBUG = false;
+
+    // ---- AnyPlay integration -------------------------------------------
+    // AnyPlay starts this activity with action "com.anyplay.rgss.LAUNCH" and the
+    // full game folder in the string extra "game_dir". When it is present we use
+    // that folder INSTEAD of the fixed /storage/emulated/0/mkxp-z one. Opening
+    // the app normally (launcher icon) still uses the default folder.
+    private static final String EXTRA_GAME_DIR = "game_dir";
+    private boolean mCustomGameDir = false;
 
     protected boolean mStarted = false;
 
@@ -100,9 +109,52 @@ public class MainActivity extends SDLActivity
         }
     }
 
+    /**
+     * Reads "game_dir" from the launching intent and, if valid, makes it the
+     * game folder. The native side reads the static GAME_PATH field when the SDL
+     * thread starts (see main.cpp), so this must run before that (onCreate).
+     */
+    private void applyGameDirFromIntent(Intent intent)
+    {
+        if (intent == null) return;
+
+        String dir = intent.getStringExtra(EXTRA_GAME_DIR);
+        if (dir == null || dir.isEmpty()) return;
+
+        File f = new File(dir);
+        if (!f.isDirectory()) {
+            Log.e(TAG, "game_dir does not exist or is not a folder: " + dir);
+            return; // fall back to the default folder; native side shows an error if that is missing too
+        }
+
+        GAME_PATH = f.getAbsolutePath();
+        mCustomGameDir = true;
+        Log.i(TAG, "Game folder from AnyPlay: " + GAME_PATH);
+    }
+
+    /**
+     * The activity is singleTask. If it is still alive (user pressed Home) and
+     * AnyPlay asks for a DIFFERENT game, Ruby cannot be re-initialised in the same
+     * process, so we close and the next launch starts a fresh process.
+     */
+    @Override
+    protected void onNewIntent(Intent intent)
+    {
+        super.onNewIntent(intent);
+
+        String dir = intent.getStringExtra(EXTRA_GAME_DIR);
+        if (dir != null && !dir.isEmpty() && !new File(dir).getAbsolutePath().equals(GAME_PATH)) {
+            Toast.makeText(this, "Closing the running game. Open the new game again.", Toast.LENGTH_LONG).show();
+            finish(); // onDestroy() exits the process, so the next launch is clean
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
+        // Must be before super.onCreate(): picks the game folder before SDL starts.
+        applyGameDirFromIntent(getIntent());
+
         super.onCreate(savedInstanceState);
 
         mStorageManager = (StorageManager) getSystemService(STORAGE_SERVICE);
@@ -151,7 +203,7 @@ public class MainActivity extends SDLActivity
 
         if (!mStarted) {
             // Check for main OBB file
-            if (new File(OBB_MAIN_FILENAME).exists()) {
+            if (!mCustomGameDir && new File(OBB_MAIN_FILENAME).exists()) {
                 Log.v(TAG, "Main OBB file found, starting with main OBB mount");
 
                 // Try to mount main OBB file

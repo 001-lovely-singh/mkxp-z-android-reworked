@@ -7,7 +7,10 @@ android {
     compileSdk 33
 
     defaultConfig {
-        applicationId "com.hatkid.mkxpz"
+        // Package name AnyPlay looks for (RgssLauncher.PLUGIN_PACKAGE).
+        // Only applicationId changes; `namespace` above must stay com.hatkid.mkxpz
+        // because the Java package / native JNI code use it.
+        applicationId "com.anyplay.rgssplugin"
         minSdk 23
         targetSdk 33
         versionCode 11
@@ -20,6 +23,10 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // AnyPlay: an UNSIGNED APK cannot be installed on Android ("package appears
+            // to be invalid"). Sign the release build with the auto-generated debug key so
+            // the APK installs. (Fine for personal use; use your own keystore for a public release.)
+            signingConfig signingConfigs.debug
         }
 
         debug {
