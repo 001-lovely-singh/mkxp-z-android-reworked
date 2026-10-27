@@ -1026,12 +1026,22 @@ static void runRMXPScripts(BacktraceData &btData) {
             // AnyPlay: old RPG Maker games were written for Ruby 1.8, which
             // allowed "Foo.new (a, b)" (space before the bracket). Modern Ruby
             // rejects that as a SyntaxError, so remove the space first.
+            // Also: the byte range \x7f-\x9f in a regex is invalid in UTF-8 source,
+            // so write it as the matching unicode range instead.
             {
                 static VALUE compatFix = Qnil;
                 if (compatFix == Qnil) {
-                    compatFix = rb_eval_string(
-                        "lambda { |s| begin; s.gsub(/\\.new[ \\t]+\\(/, '.new('); "
-                        "rescue Exception; s; end }");
+                    compatFix = rb_eval_string(R"RB(
+lambda { |s|
+  begin
+    s = s.gsub(/\.new[ \t]+\(/, '.new(')
+    s = s.gsub('\x7f-\x9f') { '\u007f-\u009f' }
+    s
+  rescue Exception
+    s
+  end
+}
+)RB");
                     rb_gc_register_address(&compatFix);
                 }
                 VALUE fixed = rb_funcall(compatFix, rb_intern("call"), 1, string);
