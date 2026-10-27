@@ -19,14 +19,26 @@ android {
         ndk.debugSymbolLevel = 'FULL'
     }
 
+    // AnyPlay: ONE fixed signing key, stored in the repo (app/anyplay-rgss.keystore).
+    // GitHub Actions makes a brand-new random debug key on every run, so every build
+    // had a different signature and Android refused to update the old install
+    // ("uninstall first"). With this fixed key, every new APK installs OVER the old one.
+    signingConfigs {
+        anyplay {
+            storeFile file('anyplay-rgss.keystore')
+            storePassword 'anyplay123'
+            keyAlias 'anyplay'
+            keyPassword 'anyplay123'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             // AnyPlay: an UNSIGNED APK cannot be installed on Android ("package appears
-            // to be invalid"). Sign the release build with the auto-generated debug key so
-            // the APK installs. (Fine for personal use; use your own keystore for a public release.)
-            signingConfig signingConfigs.debug
+            // to be invalid"), so sign with the fixed AnyPlay key defined above.
+            signingConfig signingConfigs.anyplay
         }
 
         debug {
