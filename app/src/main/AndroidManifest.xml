@@ -61,12 +61,12 @@
             android:preferMinimalPostProcessing="true"
             android:exported="true"
         >
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            <!-- AnyPlay: the MAIN / LAUNCHER / LEANBACK_LAUNCHER filter was REMOVED on purpose,
+                 so this plugin has no icon on the home screen or in the app drawer.
+                 It is only visible in Settings > Apps and is started by AnyPlay (filter below). -->
 
-                <!-- Let Android know that we can handle some USB devices and should receive this event -->
+            <!-- Let Android know that we can handle some USB devices and should receive this event -->
+            <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
 
