@@ -1238,9 +1238,26 @@ static void mriBindingExecute() {
     // Load them up front; if one is missing, just carry on.
     {
         int reqState = 0;
-        rb_eval_string_protect(
-            "['zlib', 'stringio'].each { |l| begin; require l; rescue LoadError; end }",
-            &reqState);
+        rb_eval_string_protect(R"RB(
+['zlib', 'stringio'].each { |l| begin; require l; rescue LoadError; end }
+
+# Things Ruby 1.8 had and modern Ruby removed, which old RPG Maker scripts still use.
+class Thread
+  @__anyplay_critical = false
+  class << self
+    unless respond_to?(:critical)
+      def critical; @__anyplay_critical; end
+      def critical=(v); @__anyplay_critical = v; end
+    end
+  end
+end
+class Array
+  def nitems; count { |x| !x.nil? }; end unless method_defined?(:nitems)
+end
+class << File
+  alias_method :exists?, :exist? unless respond_to?(:exists?)
+end
+)RB", &reqState);
         if (reqState)
             rb_set_errinfo(Qnil);
     }
