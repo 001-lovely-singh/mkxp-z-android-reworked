@@ -207,6 +207,65 @@ void* miniffi_call_cb(void *args) {
     }
 #endif
 
+#ifdef __ANDROID__
+// AnyPlay: map a Windows virtual-key code to an SDL scancode (0 = unknown).
+static int anyplayVkToScancode(int vk) {
+    if (vk >= 0x41 && vk <= 0x5A) return SDL_SCANCODE_A + (vk - 0x41);
+    if (vk >= 0x31 && vk <= 0x39) return SDL_SCANCODE_1 + (vk - 0x31);
+    if (vk == 0x30) return SDL_SCANCODE_0;
+    if (vk >= 0x61 && vk <= 0x69) return SDL_SCANCODE_KP_1 + (vk - 0x61);
+    if (vk == 0x60) return SDL_SCANCODE_KP_0;
+    if (vk >= 0x70 && vk <= 0x7B) return SDL_SCANCODE_F1 + (vk - 0x70);
+    switch (vk) {
+        case 0x08: return SDL_SCANCODE_BACKSPACE;
+        case 0x09: return SDL_SCANCODE_TAB;
+        case 0x0D: return SDL_SCANCODE_RETURN;
+        case 0x10: case 0xA0: return SDL_SCANCODE_LSHIFT;
+        case 0xA1: return SDL_SCANCODE_RSHIFT;
+        case 0x11: case 0xA2: return SDL_SCANCODE_LCTRL;
+        case 0xA3: return SDL_SCANCODE_RCTRL;
+        case 0x12: case 0xA4: return SDL_SCANCODE_LALT;
+        case 0xA5: return SDL_SCANCODE_RALT;
+        case 0x1B: return SDL_SCANCODE_ESCAPE;
+        case 0x20: return SDL_SCANCODE_SPACE;
+        case 0x21: return SDL_SCANCODE_PAGEUP;
+        case 0x22: return SDL_SCANCODE_PAGEDOWN;
+        case 0x23: return SDL_SCANCODE_END;
+        case 0x24: return SDL_SCANCODE_HOME;
+        case 0x25: return SDL_SCANCODE_LEFT;
+        case 0x26: return SDL_SCANCODE_UP;
+        case 0x27: return SDL_SCANCODE_RIGHT;
+        case 0x28: return SDL_SCANCODE_DOWN;
+        case 0x2D: return SDL_SCANCODE_INSERT;
+        case 0x2E: return SDL_SCANCODE_DELETE;
+        case 0xBA: return SDL_SCANCODE_SEMICOLON;
+        case 0xBB: return SDL_SCANCODE_EQUALS;
+        case 0xBC: return SDL_SCANCODE_COMMA;
+        case 0xBD: return SDL_SCANCODE_MINUS;
+        case 0xBE: return SDL_SCANCODE_PERIOD;
+        case 0xBF: return SDL_SCANCODE_SLASH;
+    }
+    return 0;
+}
+
+// AnyPlay: is this Windows virtual key currently held? (keyboard or touch)
+static bool anyplayVkDown(int vk) {
+    if (vk == 0x01 || vk == 0x02) {            // mouse buttons (touch = left click)
+        Uint32 b = SDL_GetMouseState(NULL, NULL);
+        return (b & (vk == 0x01 ? SDL_BUTTON_LMASK : SDL_BUTTON_RMASK)) != 0;
+    }
+    int sc = anyplayVkToScancode(vk);
+    if (!sc) return false;
+    const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    if (ks[sc]) return true;
+    // generic SHIFT / CTRL / ALT: either side counts
+    if (vk == 0x10) return ks[SDL_SCANCODE_RSHIFT] != 0;
+    if (vk == 0x11) return ks[SDL_SCANCODE_RCTRL] != 0;
+    if (vk == 0x12) return ks[SDL_SCANCODE_RALT] != 0;
+    return false;
+}
+#endif
+
 RB_METHOD(MiniFFI_call) {
     MiniFFIFuncArgs param;
 #define params param.params
@@ -224,6 +283,24 @@ RB_METHOD(MiniFFI_call) {
 #ifdef __ANDROID__
     // AnyPlay: dummy Windows function -> ignore the call safely.
     if (RTEST(rb_iv_get(self, "_dummy"))) {
+        // Emulate the few Windows functions games use for INPUT and for
+        // "is my window focused?" checks. Without this every key looked
+        // "not pressed" and the game ignored all controls.
+        {
+            VALUE fn = rb_iv_get(self, "_funcname");
+            std::string f = NIL_P(fn) ? "" : RSTRING_PTR(fn);
+            for (auto &c : f) c = (char)tolower((unsigned char)c);
+            if (f == "getasynckeystate" || f == "getkeystate") {
+                int vk = items > 0 ? NUM2INT(rb_ary_entry(args, 0)) : 0;
+                return MVAL2RB(anyplayVkDown(vk) ? 0x8000 : 0);
+            }
+            if (f == "getforegroundwindow" || f == "getactivewindow" ||
+                f == "getfocus" || f == "findwindow" || f == "findwindowex" ||
+                f == "findwindowa" || f == "findwindowexa" ||
+                f == "getwindowthreadprocessid" || f == "getcurrentthreadid" ||
+                f == "getcurrentprocessid")
+                return MVAL2RB(1);
+        }
         switch (FIX2INT(own_exports)) {
             case _T_POINTER:
                 return rb_utf8_str_new_cstr("");

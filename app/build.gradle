@@ -1,5 +1,6 @@
 plugins {
     id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
@@ -13,8 +14,8 @@ android {
         applicationId "com.anyplay.rgssplugin"
         minSdk 23
         targetSdk 33
-        versionCode 11
-        versionName "0.1.1"
+        versionCode 12
+        versionName "0.1.2"
         archivesBaseName = "mkxp-z-$versionName"
         ndk.debugSymbolLevel = 'FULL'
     }
@@ -62,6 +63,11 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    // AnyPlay overlay is written in Kotlin
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
     externalNativeBuild {
         ndkBuild {
             path "jni/Android.mk"
@@ -72,4 +78,5 @@ android {
 
 dependencies {
     implementation 'com.intuit.sdp:sdp-android:1.1.0'
+    implementation 'androidx.core:core-ktx:1.9.0'
 }

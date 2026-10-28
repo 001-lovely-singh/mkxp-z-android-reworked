@@ -20,6 +20,10 @@
  */
 
 #include "graphics.h"
+#ifdef __ANDROID__
+#include <jni.h>
+#include <SDL_system.h>
+#endif
 
 #include "alstream.h"
 #include "audio.h"
@@ -1162,6 +1166,27 @@ void Graphics::update(bool checkForShutdown) {
     
     if (p->frozen)
         return;
+    
+#ifdef __ANDROID__
+    {
+        // AnyPlay: tell the Java side the game drew its first frame, so the
+        // loading spinner can be removed.
+        static bool firstFrameSent = false;
+        if (!firstFrameSent) {
+            firstFrameSent = true;
+            JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+            jobject activity = (jobject)SDL_AndroidGetActivity();
+            if (env && activity) {
+                jclass cls = env->GetObjectClass(activity);
+                jmethodID mID = cls ? env->GetStaticMethodID(cls, "onGameFirstFrame", "()V") : 0;
+                if (mID) env->CallStaticVoidMethod(cls, mID);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                if (cls) env->DeleteLocalRef(cls);
+                env->DeleteLocalRef(activity);
+            }
+        }
+    }
+#endif
     
     if (p->fpsLimiter.frameSkipRequired()) {
         if (p->useFrameSkip) {

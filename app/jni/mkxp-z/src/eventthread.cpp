@@ -458,18 +458,27 @@ void EventThread::process(RGSSThreadData &rtData)
 						break;
 
 					case REQUEST_WINRESIZE:
+#ifndef __ANDROID__
+						// AnyPlay: on Android the window is always the whole screen.
+						// Resizing it to the game size made the game a small box.
 						SDL_SetWindowSize(win, event.window.data1, event.window.data2);
+#endif
 						rtData.rqWindowAdjust.clear();
 						break;
 
 					case REQUEST_WINREPOSITION:
+#ifndef __ANDROID__
 						SDL_SetWindowPosition(win, event.window.data1, event.window.data2);
+#endif
 						rtData.rqWindowAdjust.clear();
 						break;
 
 					case REQUEST_WINCENTER:
 						rc = SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm);
 
+#ifdef __ANDROID__
+						rc = 1;
+#endif
 						if (!rc)
 							SDL_SetWindowPosition(
 								win,

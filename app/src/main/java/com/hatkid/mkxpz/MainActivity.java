@@ -23,8 +23,8 @@ import java.util.Locale;
 import java.io.File;
 
 import org.libsdl.app.SDLActivity;
-import com.hatkid.mkxpz.gamepad.Gamepad;
-import com.hatkid.mkxpz.gamepad.GamepadConfig;
+import android.view.ViewGroup;
+import com.anyplay.overlay.AnyPlayUi;
 
 public class MainActivity extends SDLActivity
 {
@@ -49,9 +49,9 @@ public class MainActivity extends SDLActivity
 
     private StorageManager mStorageManager;
 
-    // In-screen gamepad
-    private final Gamepad mGamepad = new Gamepad();
-    private boolean mGamepadInvisible = false;
+    // AnyPlay overlay (gamepad, keyboard, loading spinner, Close-game dialog)
+    private AnyPlayUi mUi;
+    private static MainActivity sInstance;
 
     private void runSDLThread()
     {
@@ -184,16 +184,29 @@ public class MainActivity extends SDLActivity
             }
         }
 
-        // Setup in-screen gamepad
-        mGamepadInvisible = (isAndroidTV() || isChromebook());
-        GamepadConfig gpadConfig = new GamepadConfig();
-        mGamepad.init(gpadConfig, mGamepadInvisible);
-        mGamepad.setOnKeyDownListener(SDLActivity::onNativeKeyDown);
-        mGamepad.setOnKeyUpListener(SDLActivity::onNativeKeyUp);
-
+        // AnyPlay overlay on top of the game surface
+        sInstance = this;
         if (mLayout != null) {
-            mGamepad.attachTo(this, mLayout);
+            mUi = new AnyPlayUi(this, mLayout, GAME_PATH);
         }
+    }
+
+    /**
+     * Called from native code (graphics.cpp) when the game draws its first frame.
+     * Removes the loading spinner.
+     */
+    @SuppressWarnings("unused")
+    public static void onGameFirstFrame()
+    {
+        MainActivity a = sInstance;
+        if (a != null && a.mUi != null) a.mUi.onFirstFrame();
+    }
+
+    @Override
+    protected void onPause()
+    {
+        if (mUi != null) mUi.onPause();
+        super.onPause();
     }
 
     @Override
@@ -223,6 +236,8 @@ public class MainActivity extends SDLActivity
     @Override
     protected void onDestroy()
     {
+        if (mUi != null) mUi.onDestroy();
+        sInstance = null;
         super.onDestroy();
 
         // HACK: Exiting the JVM (process) since Ruby does not likes when we
@@ -234,44 +249,14 @@ public class MainActivity extends SDLActivity
     @Override
     public boolean dispatchKeyEvent(KeyEvent evt)
     {
-        if (
-            evt.getKeyCode() != KeyEvent.KEYCODE_BACK &&
-            evt.getKeyCode() != KeyEvent.KEYCODE_VOLUME_UP &&
-            evt.getKeyCode() != KeyEvent.KEYCODE_VOLUME_DOWN &&
-            evt.getKeyCode() != KeyEvent.KEYCODE_VOLUME_MUTE
-        ) {
-            // Hide gamepad view on key events when visible
-            if (!mGamepadInvisible) {
-                mGamepad.hideView();
-                mGamepadInvisible = true;
+        // Back button: show the "Close game?" dialog (same as the AnyPlay app)
+        if (evt.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (evt.getAction() == KeyEvent.ACTION_UP && mUi != null) {
+                mUi.onBack();
             }
-        }
-
-        if (mGamepad.processGamepadEvent(evt))
             return true;
-
+        }
         return super.dispatchKeyEvent(evt);
-    }
-
-    @Override
-    public boolean dispatchTouchEvent(MotionEvent evt)
-    {
-        // Show gamepad view on touch when hidden
-        if (mGamepadInvisible) {
-            mGamepad.showView();
-            mGamepadInvisible = false;
-        }
-
-        return super.dispatchTouchEvent(evt);
-    }
-
-    @Override
-    public boolean onGenericMotionEvent(MotionEvent evt)
-    {
-        if (mGamepad.processDPadEvent(evt))
-            return true;
-
-        return super.onGenericMotionEvent(evt);
     }
 
     /**

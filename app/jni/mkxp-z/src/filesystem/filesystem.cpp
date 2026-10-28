@@ -346,6 +346,12 @@ FileSystem::FileSystem(const char *argv0, bool allowSymlinks)
 
 	if (allowSymlinks)
 		PHYSFS_permitSymbolicLinks(1);
+#ifdef __ANDROID__
+	// AnyPlay: without this PhysFS does an extra lstat() on every folder of every
+	// path for EVERY file check. On shared storage (FUSE) that made the start-up
+	// file scan take minutes for big games. Allowing symlinks skips those checks.
+	PHYSFS_permitSymbolicLinks(1);
+#endif
 }
 
 FileSystem::~FileSystem()
@@ -472,11 +478,13 @@ static PHYSFS_EnumerateCallbackResult cacheEnumCB(void *d, const char *origdir,
 }
 
 void FileSystem::createPathCache() {
+  Uint32 t0 = SDL_GetTicks();
   CacheEnumData data(p);
   data.fileLists.push(&p->fileLists[""]);
   PHYSFS_enumerate("", cacheEnumCB, &data);
 
   p->havePathCache = true;
+  Debug() << "AnyPlay: file index built in" << (int)(SDL_GetTicks() - t0) << "ms";
 }
 
 void FileSystem::reloadPathCache() {
