@@ -98,6 +98,9 @@ public:
 
 	int mouseX();
 	int mouseY();
+	int tapSeq();
+	int tapX();
+	int tapY();
     int scrollV();
     bool mouseInWindow();
     
