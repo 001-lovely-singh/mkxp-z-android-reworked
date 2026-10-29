@@ -23,7 +23,9 @@ import java.util.Locale;
 import java.io.File;
 
 import org.libsdl.app.SDLActivity;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import com.anyplay.overlay.AnyPlayUi;
 
 public class MainActivity extends SDLActivity
@@ -184,6 +186,8 @@ public class MainActivity extends SDLActivity
             }
         }
 
+        hideSystemUi();
+
         // AnyPlay overlay on top of the game surface
         sInstance = this;
         if (mLayout != null) {
@@ -200,6 +204,37 @@ public class MainActivity extends SDLActivity
     {
         MainActivity a = sInstance;
         if (a != null && a.mUi != null) a.mUi.onFirstFrame();
+    }
+
+    /**
+     * Real full screen: hides the status bar and the gesture/navigation bar
+     * (they reappear for a moment when the user swipes from the edge) and draws
+     * under the camera notch. Without this the game area was cut at the top/bottom.
+     */
+    private void hideSystemUi()
+    {
+        View decor = getWindow().getDecorView();
+        decor.setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus)
+    {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemUi();
     }
 
     @Override
