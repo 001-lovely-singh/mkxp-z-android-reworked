@@ -281,6 +281,21 @@ RB_METHOD(inputMouseY) {
     return rb_fix_new(shState->input().mouseY());
 }
 
+RB_METHOD(inputTapSeq) {
+    RB_UNUSED_PARAM;
+    return rb_fix_new(shState->input().tapSeq());
+}
+
+RB_METHOD(inputTapX) {
+    RB_UNUSED_PARAM;
+    return rb_fix_new(shState->input().tapX());
+}
+
+RB_METHOD(inputTapY) {
+    RB_UNUSED_PARAM;
+    return rb_fix_new(shState->input().tapY());
+}
+
 RB_METHOD(inputScrollV) {
     RB_UNUSED_PARAM;
     
@@ -586,6 +601,9 @@ void inputBindingInit() {
     
     _rb_define_module_function(module, "mouse_x", inputMouseX);
     _rb_define_module_function(module, "mouse_y", inputMouseY);
+    _rb_define_module_function(module, "anyplay_tap_seq", inputTapSeq);
+    _rb_define_module_function(module, "anyplay_tap_x", inputTapX);
+    _rb_define_module_function(module, "anyplay_tap_y", inputTapY);
     _rb_define_module_function(module, "scroll_v", inputScrollV);
     _rb_define_module_function(module, "mouse_in_window", inputMouseInWindow);
     _rb_define_module_function(module, "mouse_in_window?", inputMouseInWindow);
