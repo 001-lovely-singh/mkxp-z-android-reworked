@@ -229,8 +229,12 @@ void EventThread::process(RGSSThreadData &rtData)
 			case SDL_MOUSEBUTTONDOWN:
 			case SDL_MOUSEBUTTONUP:
 			case SDL_MOUSEMOTION:
+#ifndef __ANDROID__
 				if (event.button.which == SDL_TOUCH_MOUSEID)
 					continue;
+#endif
+				// AnyPlay: on Android a finger tap acts as a mouse click, so
+				// games (and the plugin's tap-to-walk) can read Input.mouse_x/y.
 				break;
 
 			case SDL_FINGERDOWN:
