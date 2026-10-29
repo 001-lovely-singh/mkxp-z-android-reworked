@@ -1291,6 +1291,31 @@ module AnyPlayCompat
 end
 AnyPlayCompat.safe_dispose_patch
 
+# Windows raises EACCES when you open a folder as a file; Linux raises EISDIR later
+# on read. Many scripts only rescue the Windows errors, so behave like Windows.
+class << File
+  alias_method :__anyplay_open, :open
+  def open(path, *args, &blk)
+    if path.is_a?(String) && File.directory?(path)
+      mode = args[0]
+      if mode.nil? || (mode.is_a?(String) && mode.start_with?("r"))
+        raise Errno::EACCES, path
+      end
+    end
+    __anyplay_open(path, *args, &blk)
+  end
+end
+
+module AnyPlayLog
+  @n = 0
+  def self.write(msg)
+    return if @n > 60
+    @n += 1
+    File.__anyplay_open("AnyPlay_touch_log.txt", "a") { |f| f.puts(msg) }
+  rescue Exception
+  end
+end
+
 module AnyPlayTouch
   DIRS = { 2 => [0, 1], 4 => [-1, 0], 6 => [1, 0], 8 => [0, -1] }
   @route = []          # list of directions still to walk
@@ -1319,7 +1344,9 @@ module AnyPlayTouch
 
     def scene_is_map?
       sc = (defined?(SceneManager) ? SceneManager.scene : $scene)
-      sc.is_a?(Scene_Map)
+      return false if sc.nil?
+      return true if defined?(Scene_Map) && sc.is_a?(Scene_Map)
+      sc.class.name.to_s.include?("Map") || sc.instance_variable_defined?(:@spriteset)
     rescue Exception
       false
     end
@@ -1470,6 +1497,7 @@ module AnyPlayTouch
 
     def on_tap(mx, my)
       @route = []; @face = nil; @dir = nil; @expect = nil
+      AnyPlayLog.write("tap #{mx},#{my} scene=#{(defined?(SceneManager) ? SceneManager.scene : $scene).class} free=#{map_free?} player=#{($game_player.x rescue '?')},#{($game_player.y rescue '?')}")
       unless map_free?
         @press_c = 1          # dialogs, menus, title: tap = confirm
         return
@@ -1480,6 +1508,7 @@ module AnyPlayTouch
         return
       end
       route, face = plan(tx, ty)
+      AnyPlayLog.write("  target=#{tx},#{ty} route=#{route.length} face=#{face.inspect}")
       if route.empty?
         if face
           turn(face); @press_c = 1
