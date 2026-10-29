@@ -24,7 +24,8 @@ import kotlin.math.abs
 /**
  * Everything AnyPlay draws on top of the game inside the RGSS plugin:
  *  - a loading spinner (until the game draws its first frame),
- *  - a "tap the screen = ENTER" layer,
+ *  - (taps on empty screen go straight to the game, which turns them into
+ *    walk-to / talk / confirm, see anyplay_prelude.rb),
  *  - the AnyPlay gamepad / keyboard / edit-mode / toolbar overlay,
  *  - the "Close game?" dialog for the Back button.
  *
@@ -46,13 +47,10 @@ class AnyPlayUi(
     init {
         parent.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // 1) tap layer (lowest). Empty-space taps fall through the gamepad to here.
-        root.addView(TapLayer(), FrameLayout.LayoutParams(-1, -1))
-
-        // 2) gamepad + keyboard + toolbar
+        // 1) gamepad + keyboard + toolbar
         controller = OverlayController(activity, root, bridge, gameKey, onOpenCheats = {}, showCheats = false)
 
-        // 3) loading spinner (top-most, hides the black screen)
+        // 2) loading spinner (top-most, hides the black screen)
         loading.setBackgroundColor(Color.BLACK)
         loading.isClickable = true
         val box = LinearLayout(activity).apply {
@@ -165,35 +163,6 @@ class AnyPlayUi(
         d.window?.apply {
             decorView.systemUiVisibility = activity.window.decorView.systemUiVisibility
             clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
-        }
-    }
-
-    // ---- Tap anywhere on empty screen = press ENTER ------------------------
-
-    private inner class TapLayer : View(activity) {
-        private var downX = 0f
-        private var downY = 0f
-        private var downTime = 0L
-        private val slop = ViewConfiguration.get(activity).scaledTouchSlop
-
-        init {
-            isFocusable = false
-        }
-
-        override fun onTouchEvent(ev: MotionEvent): Boolean {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = ev.x; downY = ev.y; downTime = ev.eventTime
-                }
-                MotionEvent.ACTION_UP -> {
-                    if (abs(ev.x - downX) < slop * 2 && abs(ev.y - downY) < slop * 2 &&
-                        ev.eventTime - downTime < 350
-                    ) {
-                        bridge.tap(KeyEvent.KEYCODE_ENTER)
-                    }
-                }
-            }
-            return true
         }
     }
 }

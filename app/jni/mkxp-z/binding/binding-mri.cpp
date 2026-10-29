@@ -1260,6 +1260,345 @@ end
 )RB", &reqState);
         if (reqState)
             rb_set_errinfo(Qnil);
+
+        // AnyPlay: safe dispose, full-screen fit, tap-to-walk (see anyplay_prelude.rb)
+        {
+            int preState = 0;
+            rb_eval_string_protect(R"RB(# AnyPlay RGSS plugin: runs before the game's own scripts (Android only).
+# 1) Plane/Sprite/... #dispose no longer crashes for subclasses that skip `super` in initialize
+# 2) game screen is resized to the game's own size (fills the screen)
+# 3) touch: tap = walk there / talk to NPC / confirm
+module AnyPlayCompat
+  def self.safe_dispose_patch
+    [:Plane, :Sprite, :Viewport, :Window, :Tilemap].each do |n|
+      begin
+        k = Object.const_get(n)
+        next unless k.method_defined?(:dispose)
+        next if k.method_defined?(:__anyplay_dispose)
+        k.class_eval do
+          alias_method :__anyplay_dispose, :dispose
+          def dispose
+            __anyplay_dispose
+          rescue Exception => e
+            raise unless e.message.to_s.include?("No instance data")
+            nil
+          end
+        end
+      rescue Exception
+      end
+    end
+  end
+end
+AnyPlayCompat.safe_dispose_patch
+
+module AnyPlayTouch
+  DIRS = { 2 => [0, 1], 4 => [-1, 0], 6 => [1, 0], 8 => [0, -1] }
+  @route = []          # list of directions still to walk
+  @face = nil          # direction to face at the end (to talk to an NPC)
+  @dir = nil           # direction handed to the game this frame
+  @press_c = 0
+  @was_down = false
+  @down_frames = 0
+  @sx = @sy = @lx = @ly = 0
+  @stuck = 0
+  @hooked = false
+  @errors = 0
+  @sized = false
+  @native_resize = nil
+  class << self
+    attr_accessor :dir, :press_c
+    attr_writer :native_resize
+
+    def tile_w
+      (Game_Map::TILEWIDTH rescue 32)
+    end
+
+    def tile_h
+      (Game_Map::TILEHEIGHT rescue 32)
+    end
+
+    def scene_is_map?
+      sc = (defined?(SceneManager) ? SceneManager.scene : $scene)
+      sc.is_a?(Scene_Map)
+    rescue Exception
+      false
+    end
+
+    def map_free?
+      return false unless scene_is_map?
+      return false if ($game_temp.message_window_showing rescue false)
+      return false if ($game_message.visible rescue false)
+      return false if ($game_system.map_interpreter.running? rescue false)
+      return false if ($game_map.interpreter.running? rescue false)
+      true
+    end
+
+    def mouse_down?
+      @gaks ||= Win32API.new('user32', 'GetAsyncKeyState', 'i', 'i')
+      (@gaks.call(1) & 0x8000) != 0
+    rescue Exception
+      false
+    end
+
+    def hook_input
+      return if @hooked
+      return unless defined?(Input) && Input.respond_to?(:dir4)
+      @hooked = true
+      class << Input
+        alias_method :__ap_dir4, :dir4
+        def dir4
+          d = AnyPlayTouch.dir
+          return d if d
+          __ap_dir4
+        end
+        alias_method :__ap_trigger, :trigger?
+        def trigger?(b)
+          if AnyPlayTouch.press_c > 0 && (b == Input::C)
+            return true
+          end
+          __ap_trigger(b)
+        end
+        if Input.respond_to?(:repeat?)
+          alias_method :__ap_repeat, :repeat?
+          def repeat?(b)
+            if AnyPlayTouch.press_c > 0 && (b == Input::C)
+              return true
+            end
+            __ap_repeat(b)
+          end
+        end
+      end
+    end
+
+    def screen_to_tile(mx, my)
+      f = ($ResizeFactor || 1.0).to_f
+      f = 1.0 if f <= 0
+      ox = ($ResizeOffsetX || 0).to_f
+      oy = ($ResizeOffsetY || 0).to_f
+      tw = tile_w * f
+      th = tile_h * f
+      psx = ($game_player.screen_x + ox) * f
+      psy = ($game_player.screen_y + oy) * f - th / 2.0
+      [$game_player.x + ((mx - psx) / tw).round, $game_player.y + ((my - psy) / th).round]
+    end
+
+    def event_at(x, y)
+      evs = $game_map.events
+      list = evs.respond_to?(:values) ? evs.values : evs
+      list.find do |e|
+        next false unless e.x == x && e.y == y && !e.through
+        e.respond_to?(:list) ? (e.list && e.list.length > 1) : true
+      end
+    rescue Exception
+      nil
+    end
+
+    def can_step?(x, y, d)
+      $game_player.passable?(x, y, d)
+    rescue Exception
+      false
+    end
+
+    def plan(tx, ty)
+      sx = $game_player.x
+      sy = $game_player.y
+      start = [sx, sy]
+      prev = { start => nil }
+      queue = [start]
+      i = 0
+      while i < queue.length && prev.length < 5000
+        cur = queue[i]; i += 1
+        DIRS.each do |d, (dx, dy)|
+          nx = cur[0] + dx
+          ny = cur[1] + dy
+          next if prev.key?([nx, ny])
+          next unless $game_map.valid?(nx, ny)
+          next unless can_step?(cur[0], cur[1], d)
+          prev[[nx, ny]] = [cur, d]
+          queue << [nx, ny]
+        end
+      end
+      ev = event_at(tx, ty)
+      goal = nil
+      face = nil
+      if ev && prev.length > 1
+        # walk next to the NPC/object and face it
+        best = nil
+        DIRS.each do |d, (dx, dy)|
+          n = [tx - dx, ty - dy]
+          next unless prev.key?(n)
+          len = path_len(prev, n)
+          best = [n, d, len] if best.nil? || len < best[2]
+        end
+        if best
+          goal = best[0]; face = best[1]
+        end
+      end
+      if goal.nil?
+        if prev.key?([tx, ty])
+          goal = [tx, ty]
+        else
+          goal = queue.min_by { |n| [(n[0] - tx).abs + (n[1] - ty).abs, path_len(prev, n)] }
+        end
+      end
+      dirs = []
+      n = goal
+      while prev[n]
+        dirs.unshift(prev[n][1])
+        n = prev[n][0]
+      end
+      [dirs, face]
+    end
+
+    def path_len(prev, n)
+      c = 0
+      while prev[n]
+        n = prev[n][0]; c += 1
+      end
+      c
+    end
+
+    def turn(d)
+      case d
+      when 2 then $game_player.turn_down
+      when 4 then $game_player.turn_left
+      when 6 then $game_player.turn_right
+      when 8 then $game_player.turn_up
+      end
+    rescue Exception
+    end
+
+    def on_tap(mx, my)
+      @route = []; @face = nil; @dir = nil; @expect = nil
+      unless map_free?
+        @press_c = 1          # dialogs, menus, title: tap = confirm
+        return
+      end
+      tx, ty = screen_to_tile(mx, my)
+      if tx == $game_player.x && ty == $game_player.y
+        @press_c = 1
+        return
+      end
+      route, face = plan(tx, ty)
+      if route.empty?
+        if face
+          turn(face); @press_c = 1
+        elsif (ev = event_at(tx, ty))
+          @press_c = 1
+        end
+        return
+      end
+      @route = route
+      @face = face
+      @stuck = 0
+    rescue Exception
+      @route = []
+    end
+
+    def walk
+      if !map_free?
+        @route = []; @face = nil; @dir = nil; @expect = nil
+        return
+      end
+      if @route.empty? && !@expect
+        @dir = nil
+        return
+      end
+      if $game_player.moving?
+        @dir = nil
+        return
+      end
+      if @expect
+        if $game_player.x == @expect[0] && $game_player.y == @expect[1]
+          @route.shift
+          @stuck = 0
+        else
+          @stuck += 1
+        end
+        @expect = nil
+        if @stuck > 15
+          @route = []; @face = nil; @dir = nil; @stuck = 0
+          return
+        end
+      end
+      if @route.empty?
+        @dir = nil
+        if @face
+          turn(@face); @face = nil; @press_c = 1
+        end
+        return
+      end
+      d = @route.first
+      @dir = d
+      @expect = [$game_player.x + DIRS[d][0], $game_player.y + DIRS[d][1]]
+    end
+
+    def tick
+      hook_input
+      if @press_c > 0
+        @press_c -= 1
+      end
+      down = mouse_down?
+      if down
+        @lx = (Input.mouse_x rescue @lx)
+        @ly = (Input.mouse_y rescue @ly)
+        if !@was_down
+          @down_frames = 0; @sx = @lx; @sy = @ly
+        end
+        @down_frames += 1
+      elsif @was_down
+        if @down_frames < 25 && (@lx - @sx).abs < 24 && (@ly - @sy).abs < 24
+          on_tap(@lx, @ly)
+        end
+      end
+      @was_down = down
+      if defined?($game_player) && $game_player
+        # any real direction key cancels the walk
+        if @route.any? && !@dir
+          real = (Input.__ap_dir4 rescue 0)
+          if real && real > 0
+            @route = []; @face = nil
+          end
+        end
+        walk
+      else
+        @dir = nil
+      end
+    end
+
+    def fit_screen
+      return if @sized
+      return unless defined?(DEFAULTSCREENWIDTH) && defined?(DEFAULTSCREENHEIGHT)
+      @sized = true
+      return unless @native_resize
+      @native_resize.call(DEFAULTSCREENWIDTH, DEFAULTSCREENHEIGHT)
+    rescue Exception
+    end
+
+    def frame
+      return if @errors > 20
+      fit_screen
+      tick
+    rescue Exception
+      @errors += 1
+      @route = []; @dir = nil
+    end
+  end
+end
+
+AnyPlayTouch.native_resize = (Graphics.method(:resize_screen) rescue nil)
+class << Graphics
+  alias_method :__anyplay_update, :update
+  def update(*a)
+    r = __anyplay_update(*a)
+    AnyPlayTouch.frame
+    r
+  end
+end
+)RB", &preState);
+            if (preState)
+                rb_set_errinfo(Qnil);
+        }
     }
 #endif
     
