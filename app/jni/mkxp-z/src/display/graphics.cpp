@@ -1439,6 +1439,20 @@ void Graphics::resizeScreen(int width, int height) {
     glState.scissorBox.set(IntRect(0, 0, p->scRes.x, p->scRes.y));
     
     shState->eThread().requestWindowResize(width, height);
+    
+#ifdef __ANDROID__
+    /* AnyPlay fix: on Android REQUEST_WINRESIZE does not call SDL_SetWindowSize
+     * (see eventthread.cpp), so no SDL_WINDOWEVENT_SIZE_CHANGED arrives and
+     * checkResize() never runs. Without this, scOffset / scSize and above all
+     * sizeResoRatio keep the values computed for the OLD resolution, and every
+     * tap (Input.anyplay_tap_x/y, Input.mouse_x/y) lands in the wrong place. */
+    p->recalculateScreenSize(p->threadData->config.fixedAspectRatio);
+    p->updateScreenResoRatio(p->threadData);
+    {
+        SDL_Rect screen = {p->scOffset.x, p->scOffset.y, p->scSize.x, p->scSize.y};
+        p->threadData->ethread->notifyGameScreenChange(screen);
+    }
+#endif
 }
 
 void Graphics::resizeWindow(int width, int height, bool center) {
