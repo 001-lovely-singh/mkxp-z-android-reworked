@@ -1333,7 +1333,7 @@ Bignum = Integer unless defined?(Bignum)
         // AnyPlay: safe dispose, full-screen fit, tap-to-walk (see anyplay_prelude.rb)
         {
             int preState = 0;
-            rb_eval_string_protect(R"RB(# AnyPlay RGSS plugin: runs before the game's own scripts (Android only).
+            rb_eval_string_protect(R"RB# AnyPlay RGSS plugin: runs before the game's own scripts (Android only).
 # 1) Plane/Sprite/... #dispose no longer crashes for subclasses that skip `super` in initialize
 # 2) game screen is resized to the game's own size (fills the screen)
 # 3) touch: tap = walk there / talk to NPC / confirm
@@ -1404,9 +1404,7 @@ module AnyPlayTouch
   @face = nil          # direction to face at the end (to talk to an NPC)
   @dir = nil           # direction handed to the game this frame
   @press_c = 0
-  @was_down = false
-  @down_frames = 0
-  @sx = @sy = @lx = @ly = 0
+  @tap_seq = nil
   @stuck = 0
   @hooked = false
   @errors = 0
@@ -1463,6 +1461,8 @@ module AnyPlayTouch
         alias_method :__ap_trigger, :trigger?
         def trigger?(b)
           if AnyPlayTouch.press_c > 0 && (b == Input::C)
+            AnyPlayTouch.press_c = 0
+            AnyPlayLog.write("  confirm sent")
             return true
           end
           __ap_trigger(b)
@@ -1471,6 +1471,7 @@ module AnyPlayTouch
           alias_method :__ap_repeat, :repeat?
           def repeat?(b)
             if AnyPlayTouch.press_c > 0 && (b == Input::C)
+              AnyPlayTouch.press_c = 0
               return true
             end
             __ap_repeat(b)
@@ -1581,21 +1582,21 @@ module AnyPlayTouch
       @route = []; @face = nil; @dir = nil; @expect = nil
       AnyPlayLog.write("tap #{mx},#{my} scene=#{(defined?(SceneManager) ? SceneManager.scene : $scene).class} free=#{map_free?} player=#{($game_player.x rescue '?')},#{($game_player.y rescue '?')}")
       unless map_free?
-        @press_c = 1          # dialogs, menus, title: tap = confirm
+        @press_c = 4          # dialogs, menus, title: tap = confirm
         return
       end
       tx, ty = screen_to_tile(mx, my)
       if tx == $game_player.x && ty == $game_player.y
-        @press_c = 1
+        @press_c = 4
         return
       end
       route, face = plan(tx, ty)
       AnyPlayLog.write("  target=#{tx},#{ty} route=#{route.length} face=#{face.inspect}")
       if route.empty?
         if face
-          turn(face); @press_c = 1
+          turn(face); @press_c = 4
         elsif (ev = event_at(tx, ty))
-          @press_c = 1
+          @press_c = 4
         end
         return
       end
@@ -1635,7 +1636,7 @@ module AnyPlayTouch
       if @route.empty?
         @dir = nil
         if @face
-          turn(@face); @face = nil; @press_c = 1
+          turn(@face); @face = nil; @press_c = 4
         end
         return
       end
@@ -1649,20 +1650,15 @@ module AnyPlayTouch
       if @press_c > 0
         @press_c -= 1
       end
-      down = mouse_down?
-      if down
-        @lx = (Input.mouse_x rescue @lx)
-        @ly = (Input.mouse_y rescue @ly)
-        if !@was_down
-          @down_frames = 0; @sx = @lx; @sy = @ly
-        end
-        @down_frames += 1
-      elsif @was_down
-        if @down_frames < 25 && (@lx - @sx).abs < 24 && (@ly - @sy).abs < 24
-          on_tap(@lx, @ly)
+      if Input.respond_to?(:anyplay_tap_seq)
+        seq = Input.anyplay_tap_seq
+        if @tap_seq.nil?
+          @tap_seq = seq
+        elsif seq != @tap_seq
+          @tap_seq = seq
+          on_tap(Input.anyplay_tap_x, Input.anyplay_tap_y)
         end
       end
-      @was_down = down
       if defined?($game_player) && $game_player
         # any real direction key cancels the walk
         if @route.any? && !@dir
@@ -1697,12 +1693,696 @@ module AnyPlayTouch
   end
 end
 
+# ---- AnyPlay cheats (RPG Maker XP / VX / Ace and Pokemon Essentials) --------
+# The Android overlay writes one command per file into the app cache folder,
+# this module reads it (every few frames), runs it, and writes a one line
+# answer back.  Checkbox cheats are just flags that are applied every frame.
+module AnyPlayCheats
+  DIR   = "/data/data/com.anyplay.rgssplugin/cache"
+  CMD   = DIR + "/anyplay_cheat_cmd.txt"
+  REPLY = DIR + "/anyplay_cheat_reply.txt"
+  NOPE  = "This cheat doesn't work in this type of game."
+  NEED_BATTLE = "You are not in a battle right now."
+
+  @on = {}
+  @speed = 2.0
+  @engine = nil
+  @tick = 0
+  @errors = 0
+  @hooked = false
+  @item_snap = nil
+  @old_textspeed = nil
+  @through_forced = false
+  @battle = nil
+
+  class << self
+    attr_accessor :battle
+
+    # ---------------------------------------------------------------- engine
+    def engine
+      return @engine if @engine
+      if defined?(PokeBattle_Battle) && defined?(PokemonBag) && defined?(PokeBattle_Pokemon)
+        @engine = :essentials
+      elsif defined?(Game_Actor) && defined?(Game_Party)
+        m = Game_Actor.instance_methods
+        @engine = if m.include?(:tp) && m.include?(:mp) then :ace
+                  elsif m.include?(:mp) then :vx
+                  else :xp end
+      else
+        return :unknown
+      end
+      @engine
+    rescue Exception
+      :unknown
+    end
+
+    def ess?; engine == :essentials; end
+    def rpgm?; [:xp, :vx, :ace].include?(engine); end
+
+    def on?(name); @on[name] ? true : false; end
+    def speed_on?; @on['speed'] ? true : false; end
+    def speed_bonus
+      m = @speed.to_f
+      m = 1.0 if m <= 0
+      Math.log(m) / Math.log(2)
+    end
+
+    # ------------------------------------------------------- party helpers
+    def actors
+      p = $game_party
+      return [] unless p
+      list = if p.respond_to?(:members) then p.members
+             elsif p.respond_to?(:actors) then p.actors
+             else [] end
+      list.compact
+    rescue Exception
+      []
+    end
+
+    def pokes
+      return [] unless $Trainer && $Trainer.respond_to?(:party)
+      ($Trainer.party || []).compact
+    rescue Exception
+      []
+    end
+
+    def in_battle?
+      case engine
+      when :essentials then !@battle.nil?
+      when :ace then ($game_party && $game_party.respond_to?(:in_battle?) && $game_party.in_battle?) ? true : false
+      else ($game_temp && $game_temp.respond_to?(:in_battle) && $game_temp.in_battle) ? true : false
+      end
+    rescue Exception
+      false
+    end
+
+    def maxhp_of(a); a.respond_to?(:mhp) ? a.mhp : a.maxhp; end
+    def maxmp_of(a)
+      return a.mmp if a.respond_to?(:mmp)
+      return a.maxsp if a.respond_to?(:maxsp)
+      a.maxmp
+    end
+
+    # ------------------------------------------------------------- commands
+    # Returns the text that is shown to the player as a toast.
+    def handle(cmd, a = "", b = "")
+      case cmd
+      when 'restore' then restore(a, b)
+      when 'toggle'  then toggle(a, b == '1')
+      when 'value'   then set_value(a, b)
+      when 'give'    then give(a, b)
+      when 'run'     then run_action(a)
+      when 'list'    then list_items(a)
+      else "Unknown cheat command."
+      end
+    rescue Exception => e
+      "Cheat failed: #{e.class}: #{e.message[0, 80]}"
+    end
+
+    def restore(speed, names)
+      s = speed.to_f
+      @speed = s if s > 0
+      @on = {}
+      names.to_s.split(',').each { |n| @on[n] = true unless n.empty? }
+      @item_snap = nil
+      ""
+    end
+
+    def toggle(name, enable)
+      unless toggle_supported?(name)
+        @on.delete(name)
+        return "#{NOPE}"
+      end
+      if enable
+        @on[name] = true
+        @item_snap = nil if name == 'items'
+      else
+        @on.delete(name)
+        toggle_off(name)
+      end
+      ""
+    end
+
+    def toggle_supported?(name)
+      case name
+      when 'tp'                         then engine == :ace
+      when 'fastText'                   then ess?
+      when 'oneHit', 'invincible', 'crit', 'escape', 'freeSkill' then ess?
+      when 'hpmp', 'gold', 'status', 'items', 'noclip', 'noEncounter', 'speed'
+        ess? || rpgm?
+      else false
+      end
+    end
+
+    def toggle_off(name)
+      case name
+      when 'noclip'
+        $game_player.through = false if $game_player && @through_forced
+        @through_forced = false
+      when 'fastText'
+        if @old_textspeed && defined?($PokemonSystem) && $PokemonSystem
+          $PokemonSystem.textspeed = @old_textspeed
+        end
+        @old_textspeed = nil
+      when 'items'
+        @item_snap = nil
+      end
+    end
+
+    # ------------------------------------------------------------- values
+    def set_value(name, v)
+      if name == 'speed'
+        s = v.to_f
+        return "Enter a number above 0." unless s > 0
+        @speed = [[s, 0.25].max, 8.0].min
+        @on['speed'] = true
+        return "Speed x#{@speed}"
+      end
+      n = v.to_s.strip
+      return "Enter a number first." if n.empty?
+      n = n.to_i
+      return "Enter a number first." if n < 0
+      case engine
+      when :essentials then ess_value(name, n)
+      when :xp, :vx, :ace then rpgm_value(name, n)
+      else NOPE
+      end
+    end
+
+    def ess_value(name, n)
+      case name
+      when 'gold'
+        return "Trainer data isn't ready yet. Start or load a game first." unless $Trainer
+        $Trainer.money = n
+        "Money set to #{$Trainer.money}"
+      when 'level'
+        ps = pokes
+        return "You have no Pokemon yet." if ps.empty?
+        lv = [[n, 1].max, PBExperience::MAXLEVEL].min
+        ps.each do |p|
+          next if p.egg?
+          p.level = lv
+          p.calcStats
+        end
+        "All Pokemon set to level #{lv}"
+      when 'exp'
+        ps = pokes
+        return "You have no Pokemon yet." if ps.empty?
+        ps.each do |p|
+          next if p.egg?
+          mx = PBExperience.pbGetMaxExperience(p.growthrate)
+          p.exp = [n, mx].min
+          p.calcStats
+        end
+        "EXP set for all Pokemon"
+      else
+        NOPE
+      end
+    end
+
+    def rpgm_value(name, n)
+      return "Start or load a game first." unless $game_party
+      case name
+      when 'gold'
+        $game_party.instance_variable_set(:@gold, [n, 99_999_999].min)
+        "Gold set to #{n}"
+      when 'level'
+        ac = actors
+        return "Your party is empty." if ac.empty?
+        ac.each do |a|
+          if a.respond_to?(:change_level)
+            a.change_level(n, false)
+          else
+            a.level = n
+          end
+        end
+        "Party level set to #{n}"
+      when 'exp'
+        ac = actors
+        return "Your party is empty." if ac.empty?
+        ac.each do |a|
+          if a.respond_to?(:change_exp)
+            a.change_exp(n, false)
+          else
+            a.exp = n
+          end
+        end
+        "Party EXP set to #{n}"
+      when 'atk', 'def', 'mat', 'mdf', 'agi', 'luk'
+        set_stat(name, n)
+      else
+        NOPE
+      end
+    end
+
+    def set_stat(name, n)
+      ac = actors
+      return "Your party is empty." if ac.empty?
+      done = false
+      ac.each do |a|
+        if engine == :ace
+          id = { 'atk' => 2, 'def' => 3, 'mat' => 4, 'mdf' => 5, 'agi' => 6, 'luk' => 7 }[name]
+          a.add_param(id, n - a.param(id))
+          done = true
+        elsif engine == :vx
+          k = { 'atk' => :atk, 'def' => :def, 'mat' => :spi, 'agi' => :agi }[name]
+          next unless k
+          cur = a.send(k)
+          a.send("#{k}_plus=", a.send("#{k}_plus") + (n - cur))
+          done = true
+        else
+          k = { 'atk' => :str, 'mat' => :int, 'agi' => :agi, 'luk' => :dex }[name]
+          next unless k
+          cur = a.send(k)
+          a.send("#{k}_plus=", a.send("#{k}_plus") + (n - cur))
+          done = true
+        end
+      end
+      done ? "Stat set to #{n} for the whole party" : NOPE
+    end
+
+    # -------------------------------------------------------------- items
+    def give(kind, arg)
+      id_s, qty_s = arg.to_s.split("\t", 2)
+      id = id_s.to_i
+      qty = qty_s.to_s.strip.empty? ? 1 : qty_s.to_i
+      return "Enter an item ID (or use Pick)." if id <= 0
+      return "Quantity must be 1 or more." if qty < 1
+      case engine
+      when :essentials
+        return NOPE unless kind == 'item'
+        return "Bag isn't ready yet. Start or load a game first." unless $PokemonBag
+        ok = $PokemonBag.pbStoreItem(id, qty)
+        ok ? "Added #{qty} x #{PBItems.getName(id)}" : "Your bag is full or doesn't accept this item."
+      when :xp, :vx, :ace
+        return "Start or load a game first." unless $game_party
+        if engine == :xp
+          case kind
+          when 'item'   then $game_party.gain_item(id, qty)
+          when 'weapon' then $game_party.gain_weapon(id, qty)
+          when 'armor'  then $game_party.gain_armor(id, qty)
+          end
+        else
+          obj = case kind
+                when 'item'   then $data_items[id]
+                when 'weapon' then $data_weapons[id]
+                when 'armor'  then $data_armors[id]
+                end
+          return "That ID doesn't exist in this game." unless obj
+          $game_party.gain_item(obj, qty)
+        end
+        "Added #{qty} x #{item_name(kind, id)}"
+      else
+        NOPE
+      end
+    end
+
+    def table_for(kind)
+      case kind
+      when 'item'   then $data_items
+      when 'weapon' then $data_weapons
+      when 'armor'  then $data_armors
+      end
+    end
+
+    def item_name(kind, id)
+      t = table_for(kind)
+      (t && t[id]) ? t[id].name.to_s : "item #{id}"
+    rescue Exception
+      "item #{id}"
+    end
+
+    # Answer is "id<TAB>name" lines, one per entry.
+    def list_items(kind)
+      out = []
+      case engine
+      when :essentials
+        return "" unless kind == 'item'
+        top = (PBItems.maxValue rescue 0)
+        (1..top).each do |i|
+          n = (PBItems.getName(i) rescue "").to_s
+          out << "#{i}\t#{n}" unless n.empty?
+        end
+      when :xp, :vx, :ace
+        t = table_for(kind)
+        return "" unless t
+        (1...t.size).each do |i|
+          o = t[i]
+          next unless o
+          n = o.name.to_s
+          out << "#{i}\t#{n}" unless n.empty?
+        end
+      end
+      out.join("\n")
+    end
+
+    # ------------------------------------------------------ one-click actions
+    def run_action(name)
+      case name
+      when 'maxExp'        then max_exp
+      when 'instantWin'    then instant_win
+      when 'fullInventory' then full_inventory
+      else "Unknown action."
+      end
+    end
+
+    def max_exp
+      case engine
+      when :essentials
+        ps = pokes
+        return "You have no Pokemon yet." if ps.empty?
+        ps.each do |p|
+          next if p.egg?
+          p.level = PBExperience::MAXLEVEL
+          p.calcStats
+        end
+        "All Pokemon are now at the maximum level"
+      when :xp, :vx, :ace
+        ac = actors
+        return "Your party is empty." if ac.empty?
+        ac.each do |a|
+          if a.respond_to?(:change_level) && a.respond_to?(:max_level)
+            a.change_level(a.max_level, false)
+          elsif a.respond_to?(:change_exp)
+            a.change_exp(99_999_999, false)
+          else
+            a.exp = 99_999_999
+          end
+        end
+        "Party is at the maximum level"
+      else
+        NOPE
+      end
+    end
+
+    def instant_win
+      case engine
+      when :essentials
+        b = @battle
+        return NEED_BATTLE unless b
+        foes = b.battlers.compact.select { |x| b.pbIsOpposing?(x.index) && !x.fainted? }
+        foes.each do |f|
+          f.pbReduceHP(f.hp, false)
+          f.pbFaint(true)
+        end
+        (b.party2 || []).each { |p| p.hp = 0 if p }
+        b.pbJudge
+        "Foes defeated. Choose any command to finish the battle."
+      when :xp, :vx, :ace
+        return NEED_BATTLE unless in_battle?
+        foes = if $game_troop.respond_to?(:enemies) then $game_troop.enemies
+               else $game_troop.members end
+        foes.each { |e| e.hp = 0 }
+        "Enemies defeated. Finish the current turn to win."
+      else
+        NOPE
+      end
+    end
+
+    def full_inventory
+      case engine
+      when :essentials
+        return "Bag isn't ready yet. Start or load a game first." unless $PokemonBag
+        top = (PBItems.maxValue rescue 0)
+        (1..top).each do |i|
+          next if (PBItems.getName(i) rescue "").to_s.empty?
+          next if (pbIsKeyItem?(i) rescue false)
+          have = ($PokemonBag.pbQuantity(i) rescue 0)
+          $PokemonBag.pbStoreItem(i, 99 - have) if have < 99
+        end
+        "Bag filled (key items skipped)"
+      when :xp, :vx, :ace
+        return "Start or load a game first." unless $game_party
+        { 'item' => $data_items, 'weapon' => $data_weapons, 'armor' => $data_armors }.each do |kind, t|
+          next unless t
+          (1...t.size).each do |i|
+            o = t[i]
+            next unless o && !o.name.to_s.empty?
+            if engine == :xp
+              have = $game_party.send("#{kind}_number", i)
+              $game_party.send("gain_#{kind}", i, 99 - have) if have < 99
+            else
+              have = $game_party.item_number(o)
+              $game_party.gain_item(o, 99 - have) if have < 99
+            end
+          end
+        end
+        "Everything added (99 each)"
+      else
+        NOPE
+      end
+    end
+
+    # ---------------------------------------------------------- per frame
+    def frame
+      return if @errors > 30
+      install_hooks
+      @tick += 1
+      poll if (@tick % 6) == 0
+      apply unless @on.empty?
+    rescue Exception => e
+      @errors += 1
+      AnyPlayLog.write("cheats: #{e.class}: #{e.message}") rescue nil
+    end
+
+    def poll
+      return unless File.exist?(CMD)
+      txt = (File.read(CMD) rescue nil)
+      File.delete(CMD) rescue nil
+      return if txt.nil? || txt.empty?
+      txt = txt.dup.force_encoding("UTF-8")
+      id, cmd, a, b = txt.chomp.split("\t", 4)
+      reply = handle(cmd.to_s, a.to_s, b.to_s)
+      File.open(REPLY + ".tmp", "wb") { |f| f.write("#{id}\t#{reply}") }
+      File.rename(REPLY + ".tmp", REPLY)
+    rescue Exception => e
+      AnyPlayLog.write("cheats poll: #{e.class}: #{e.message}") rescue nil
+    end
+
+    def apply
+      case engine
+      when :essentials then apply_ess
+      when :xp, :vx, :ace then apply_rpgm
+      end
+    end
+
+    def apply_ess
+      if on?('hpmp') && $Trainer
+        pokes.each do |p|
+          next if p.egg?
+          p.hp = p.totalhp if p.hp != p.totalhp
+          p.healPP rescue nil
+        end
+        if @battle
+          @battle.battlers.compact.each do |x|
+            next if @battle.pbIsOpposing?(x.index) || x.fainted?
+            x.hp = x.totalhp if x.hp != x.totalhp
+            (x.moves || []).each { |m| m.pp = m.totalpp if m && m.id > 0 && m.pp < m.totalpp } rescue nil
+          end
+        end
+      end
+      if on?('status') && $Trainer
+        pokes.each { |p| p.healStatus if !p.egg? && p.status != 0 }
+        if @battle
+          @battle.battlers.compact.each do |x|
+            next if @battle.pbIsOpposing?(x.index) || x.fainted?
+            x.pbCureStatus(false) if x.status != 0
+          end
+        end
+      end
+      if on?('gold') && $Trainer
+        $Trainer.money = 999_999 if $Trainer.money < 999_999
+      end
+      keep_items if on?('items')
+      if on?('fastText') && defined?($PokemonSystem) && $PokemonSystem
+        @old_textspeed = $PokemonSystem.textspeed if @old_textspeed.nil?
+        $PokemonSystem.textspeed = 2 if $PokemonSystem.textspeed != 2
+      end
+      common_map_cheats
+    end
+
+    def apply_rpgm
+      return unless $game_party
+      if on?('hpmp') || on?('tp') || on?('status')
+        actors.each do |a|
+          if on?('hpmp')
+            a.hp = maxhp_of(a)
+            mp = maxmp_of(a)
+            if a.respond_to?(:mp=) then a.mp = mp
+            elsif a.respond_to?(:sp=) then a.sp = mp end
+          end
+          a.tp = a.max_tp if on?('tp') && a.respond_to?(:tp=) && a.respond_to?(:max_tp)
+          if on?('status')
+            if a.respond_to?(:clear_states)
+              a.clear_states
+            elsif a.respond_to?(:remove_state) && a.respond_to?(:states)
+              a.states.dup.each { |s| a.remove_state(s.respond_to?(:id) ? s.id : s) }
+            end
+          end
+        end
+      end
+      if on?('gold')
+        g = $game_party.instance_variable_get(:@gold).to_i
+        $game_party.instance_variable_set(:@gold, 99_999_999) if g < 99_999_999
+      end
+      keep_items if on?('items')
+      common_map_cheats
+    end
+
+    def common_map_cheats
+      if on?('noclip') && $game_player
+        $game_player.through = true
+        @through_forced = true
+      end
+      if on?('noEncounter')
+        $game_system.encounter_disabled = true if $game_system && $game_system.respond_to?(:encounter_disabled=)
+        if $game_player && $game_player.instance_variable_defined?(:@encounter_count)
+          $game_player.instance_variable_set(:@encounter_count, 99_999)
+        end
+      end
+    end
+
+    # Unlimited items: remember the biggest amount seen of every item and
+    # put it back whenever the game takes some away.
+    def keep_items
+      @item_snap ||= {}
+      if ess?
+        return unless $PokemonBag
+        have = {}
+        $PokemonBag.pockets.each do |pk|
+          next unless pk
+          pk.each { |it| have[it[0]] = it[1] if it && it[0].is_a?(Integer) }
+        end
+        @item_snap.each do |id, q|
+          cur = have[id]
+          if cur.nil?
+            $PokemonBag.pbStoreItem(id, q) rescue nil
+          elsif cur < q
+            $PokemonBag.pbStoreItem(id, q - cur) rescue nil
+          end
+        end
+        have.each { |id, q| @item_snap[id] = q if q > (@item_snap[id] || 0) }
+      else
+        h = $game_party.instance_variable_get(:@items)
+        return unless h.is_a?(Hash)
+        @item_snap.each do |id, q|
+          cur = h[id].to_i
+          h[id] = q if cur < q
+        end
+        h.each { |id, q| @item_snap[id] = q if q.to_i > (@item_snap[id] || 0) }
+      end
+    end
+
+    # ------------------------------------------------------------- hooks
+    def install_hooks
+      return if @hooked
+      return if engine == :unknown
+      @hooked = true
+
+      if defined?(Game_Character) && Game_Character.method_defined?(:update)
+        Game_Character.class_eval do
+          alias_method :__ap_cheat_update, :update
+          def update(*args)
+            if AnyPlayCheats.speed_on? && $game_player && self.equal?($game_player) && @move_speed
+              saved = @move_speed
+              @move_speed = saved + AnyPlayCheats.speed_bonus
+              begin
+                return __ap_cheat_update(*args)
+              ensure
+                @move_speed = saved
+              end
+            end
+            __ap_cheat_update(*args)
+          end
+        end
+      end
+
+      return unless engine == :essentials
+
+      if defined?(PokeBattle_Move) && PokeBattle_Move.method_defined?(:pbIsCritical?)
+        PokeBattle_Move.class_eval do
+          alias_method :__ap_cheat_crit, :pbIsCritical?
+          def pbIsCritical?(attacker, opponent)
+            if AnyPlayCheats.on?('crit') && attacker && !@battle.pbIsOpposing?(attacker.index)
+              return true
+            end
+            __ap_cheat_crit(attacker, opponent)
+          end
+        end
+      end
+
+      if defined?(PokeBattle_Battler)
+        PokeBattle_Battler.class_eval do
+          if method_defined?(:pbReduceHP)
+            alias_method :__ap_cheat_reduce, :pbReduceHP
+            def pbReduceHP(amt, anim = false, registerDamage = true)
+              foe = @battle.pbIsOpposing?(@index)
+              return 0 if !foe && AnyPlayCheats.on?('invincible')
+              amt = self.hp if foe && AnyPlayCheats.on?('oneHit') && amt > 0
+              __ap_cheat_reduce(amt, anim, registerDamage)
+            end
+          end
+          if method_defined?(:pbReducePP)
+            alias_method :__ap_cheat_pp, :pbReducePP
+            def pbReducePP(move)
+              return true if AnyPlayCheats.on?('freeSkill') && !@battle.pbIsOpposing?(@index)
+              __ap_cheat_pp(move)
+            end
+          end
+        end
+      end
+
+      if defined?(PokeBattle_Battle)
+        PokeBattle_Battle.class_eval do
+          if method_defined?(:pbCommandPhase)
+            alias_method :__ap_cheat_cmd, :pbCommandPhase
+            def pbCommandPhase(*a)
+              AnyPlayCheats.battle = self
+              __ap_cheat_cmd(*a)
+            end
+          end
+          if method_defined?(:pbEndOfBattle)
+            alias_method :__ap_cheat_end, :pbEndOfBattle
+            def pbEndOfBattle(*a)
+              begin
+                __ap_cheat_end(*a)
+              ensure
+                AnyPlayCheats.battle = nil
+              end
+            end
+          end
+          if method_defined?(:pbCanRun?)
+            alias_method :__ap_cheat_canrun, :pbCanRun?
+            def pbCanRun?(idx)
+              return true if AnyPlayCheats.on?('escape') && !@opponent && !@cantescape && !pbIsOpposing?(idx)
+              __ap_cheat_canrun(idx)
+            end
+          end
+          if method_defined?(:pbRun)
+            alias_method :__ap_cheat_run, :pbRun
+            def pbRun(idx, duringBattle = false)
+              if AnyPlayCheats.on?('escape') && !@opponent && !@cantescape && !pbIsOpposing?(idx)
+                pbSEPlay("Battle flee") rescue nil
+                pbDisplayPaused(_INTL("Got away safely!"))
+                @decision = 3
+                return 1
+              end
+              __ap_cheat_run(idx, duringBattle)
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 AnyPlayTouch.native_resize = (Graphics.method(:resize_screen) rescue nil)
 class << Graphics
   alias_method :__anyplay_update, :update
   def update(*a)
     r = __anyplay_update(*a)
     AnyPlayTouch.frame
+    AnyPlayCheats.frame
     r
   end
 end
