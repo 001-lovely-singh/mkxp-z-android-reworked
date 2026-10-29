@@ -18,6 +18,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.content.res.ColorStateList
 import android.util.TypedValue
+import com.anyplay.engine.CheatManager
 import com.anyplay.engine.JsBridge
 import kotlin.math.abs
 
@@ -41,6 +42,8 @@ class AnyPlayUi(
     private val root = FrameLayout(activity)
     private val loading = FrameLayout(activity)
     private val controller: OverlayController
+    private val cheats = CheatManager(activity, gameKey)
+    private var cheatMenu: CheatMenuDialog? = null
     private var dialog: Dialog? = null
     private var loadingGone = false
 
@@ -48,7 +51,7 @@ class AnyPlayUi(
         parent.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // 1) gamepad + keyboard + toolbar
-        controller = OverlayController(activity, root, bridge, gameKey, onOpenCheats = {}, showCheats = false)
+        controller = OverlayController(activity, root, bridge, gameKey, onOpenCheats = { openCheats() }, showCheats = true)
 
         // 2) loading spinner (top-most, hides the black screen)
         loading.setBackgroundColor(Color.BLACK)
@@ -85,9 +88,16 @@ class AnyPlayUi(
 
     /** Back button. Returns true when handled (closes edit mode, or asks "Close game?"). */
     fun onBack(): Boolean {
+        if (cheatMenu?.handleBack() == true) return true
         if (controller.handleBack()) return true
         showCloseDialog()
         return true
+    }
+
+    private fun openCheats() {
+        val menu = cheatMenu ?: CheatMenuDialog(activity, root, cheats).also { cheatMenu = it }
+        controller.releaseAllKeys()
+        menu.show()
     }
 
     fun onPause() {
@@ -96,6 +106,8 @@ class AnyPlayUi(
 
     fun onDestroy() {
         dialog?.dismiss()
+        cheatMenu?.dismiss()
+        cheats.shutdown()
         controller.shutdown()
     }
 
