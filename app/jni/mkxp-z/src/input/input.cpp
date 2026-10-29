@@ -1436,14 +1436,33 @@ int Input::mouseX()
 {
     RGSSThreadData &rtData = shState->rtData();
     
-    return (p->mousePos[0] - rtData.screenOffset.x) * rtData.sizeResoRatio.x;
+    /* AnyPlay: read the live position. Games that replace Input.update (e.g.
+     * Pokemon Essentials) never refresh p->mousePos. */
+    return (shState->eThread().mouseState.x - rtData.screenOffset.x) * rtData.sizeResoRatio.x;
 }
 
 int Input::mouseY()
 {
     RGSSThreadData &rtData = shState->rtData();
     
-    return (p->mousePos[1] - rtData.screenOffset.y) * rtData.sizeResoRatio.y;
+    return (shState->eThread().mouseState.y - rtData.screenOffset.y) * rtData.sizeResoRatio.y;
+}
+
+int Input::tapSeq()
+{
+    return shState->eThread().mouseState.tapSeq;
+}
+
+int Input::tapX()
+{
+    RGSSThreadData &rtData = shState->rtData();
+    return (shState->eThread().mouseState.tapX - rtData.screenOffset.x) * rtData.sizeResoRatio.x;
+}
+
+int Input::tapY()
+{
+    RGSSThreadData &rtData = shState->rtData();
+    return (shState->eThread().mouseState.tapY - rtData.screenOffset.y) * rtData.sizeResoRatio.y;
 }
 
 int Input::scrollV()
