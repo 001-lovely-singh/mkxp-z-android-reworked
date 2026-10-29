@@ -422,10 +422,25 @@ void EventThread::process(RGSSThreadData &rtData)
 
 			case SDL_MOUSEBUTTONDOWN:
 				mouseState.buttons[event.button.button] = true;
+				if (event.button.button == SDL_BUTTON_LEFT) {
+					mouseState.downX = event.button.x;
+					mouseState.downY = event.button.y;
+					mouseState.downTick = SDL_GetTicks();
+				}
 				break;
 
 			case SDL_MOUSEBUTTONUP:
 				mouseState.buttons[event.button.button] = false;
+				if (event.button.button == SDL_BUTTON_LEFT) {
+					int ddx = event.button.x - mouseState.downX;
+					int ddy = event.button.y - mouseState.downY;
+					unsigned int dt = SDL_GetTicks() - mouseState.downTick;
+					if (dt < 450 && ddx > -60 && ddx < 60 && ddy > -60 && ddy < 60) {
+						mouseState.tapX = event.button.x;
+						mouseState.tapY = event.button.y;
+						mouseState.tapSeq = mouseState.tapSeq + 1;
+					}
+				}
 				break;
 
 			case SDL_MOUSEMOTION:
