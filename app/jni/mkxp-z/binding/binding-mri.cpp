@@ -1291,6 +1291,19 @@ module AnyPlayCompat
 end
 AnyPlayCompat.safe_dispose_patch
 
+# Windows environment variables that games expect (TEMP for temp files, APPDATA
+# as a fallback save folder). On Android they are missing, so scripts crashed
+# with "no implicit conversion of nil into String".
+begin
+  __ap_base = "/data/data/com.anyplay.rgssplugin"
+  __ap_tmp = __ap_base + "/cache"
+  __ap_files = __ap_base + "/files"
+  [__ap_tmp, __ap_files].each { |d| (Dir.mkdir(d) unless File.directory?(d)) rescue nil }
+  %w(TEMP TMP TMPDIR).each { |k| ENV[k] = __ap_tmp if ENV[k].nil? || ENV[k].empty? }
+  %w(APPDATA LOCALAPPDATA).each { |k| ENV[k] = __ap_files if ENV[k].nil? || ENV[k].empty? }
+rescue Exception
+end
+
 # Windows raises EACCES when you open a folder as a file; Linux raises EISDIR later
 # on read. Many scripts only rescue the Windows errors, so behave like Windows.
 class << File
