@@ -58,6 +58,11 @@ public:
 		int x, y;
 		bool inWindow;
 		bool buttons[32];
+		// AnyPlay: finished short taps (finger down+up), counted so Ruby never misses one
+		int downX, downY;
+		unsigned int downTick;
+		int tapX, tapY;
+		volatile int tapSeq;
 	};
 
 	struct FingerState
