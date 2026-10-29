@@ -1333,7 +1333,8 @@ Bignum = Integer unless defined?(Bignum)
         // AnyPlay: safe dispose, full-screen fit, tap-to-walk (see anyplay_prelude.rb)
         {
             int preState = 0;
-            rb_eval_string_protect(R"RB# AnyPlay RGSS plugin: runs before the game's own scripts (Android only).
+            rb_eval_string_protect(R"RB(
+				#AnyPlay RGSS plugin: runs before the game's own scripts (Android only).
 # 1) Plane/Sprite/... #dispose no longer crashes for subclasses that skip `super` in initialize
 # 2) game screen is resized to the game's own size (fills the screen)
 # 3) touch: tap = walk there / talk to NPC / confirm
