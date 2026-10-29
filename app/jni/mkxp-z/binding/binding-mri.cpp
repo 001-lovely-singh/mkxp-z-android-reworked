@@ -1031,9 +1031,73 @@ static void runRMXPScripts(BacktraceData &btData) {
             {
                 static VALUE compatFix = Qnil;
                 if (compatFix == Qnil) {
+                    rb_eval_string(R"RB(
+# Ruby 1.8 accepted `return` inside a top-level `proc{ ... }`; Ruby 3 raises
+# LocalJumpError. Rewrite `return` (bare or before if/unless) in such procs to
+# a catch/throw pair, without changing line numbers.
+$__anyplay_fix_proc_return = lambda { |s|
+  next s unless s.include?("return") && s =~ /\b(?:proc|Proc\.new)\s*\{/
+  out = +""
+  pos = 0
+  while (m = s.match(/\b(?:proc|Proc\.new)\s*\{/, pos))
+    open = m.end(0)
+    depth = 1
+    i = open
+    n = s.length
+    q = nil
+    while i < n && depth > 0
+      c = s[i]
+      if q
+        if c == "\\" then i += 1
+        elsif c == q then q = nil
+        end
+      elsif c == '"' || c == "'"
+        q = c
+      elsif c == "#"
+        i += 1 while i < n && s[i] != "\n"
+        next
+      elsif c == "{"
+        depth += 1
+      elsif c == "}"
+        depth -= 1
+      end
+      i += 1
+    end
+    if depth != 0
+      out << s[pos...m.end(0)]
+      pos = m.end(0)
+      next
+    end
+    close = i - 1
+    body = s[open...close]
+    out << s[pos...open]
+    # only procs registered at top level (statement starts in column 0): inside
+    # a method `return` in a proc legitimately returns from that method.
+    line_start = (s.rindex("\n", m.begin(0) - 1) || -1) + 1
+    top_level = !(s[line_start] == " " || s[line_start] == "\t")
+    if top_level && body =~ /\breturn\b/ && body !~ /\bdef\s/
+      last_line = body[/[^\n]*\z/]
+      if last_line.include?("#")
+        out << body
+      else
+        params = body[/\A\s*\|[^|]*\|/] || ""
+        rest = body[params.length..-1]
+        rest = rest.gsub(/\breturn\b(?=[ \t]*(?:if\b|unless\b|;|$|\}))/, "throw :__ap_ret")
+        out << params << " catch(:__ap_ret){ " << rest << (last_line.strip.empty? ? "" : " ") << "}"
+      end
+    else
+      out << body
+    end
+    pos = close
+  end
+  out << s[pos..-1]
+  out
+}
+)RB");
                     compatFix = rb_eval_string(R"RB(
 lambda { |s|
   begin
+    s = $__anyplay_fix_proc_return.call(s) if $__anyplay_fix_proc_return
     s = s.gsub(/\.new[ \t]+\(/, '.new(')
     s = s.gsub('\x7f-\x9f') { '\u007f-\u009f' }
     s
@@ -1257,6 +1321,11 @@ end
 class << File
   alias_method :exists?, :exist? unless respond_to?(:exists?)
 end
+class << Dir
+  alias_method :exists?, :exist? unless respond_to?(:exists?)
+end
+Fixnum = Integer unless defined?(Fixnum)
+Bignum = Integer unless defined?(Bignum)
 )RB", &reqState);
         if (reqState)
             rb_set_errinfo(Qnil);
