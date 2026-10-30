@@ -1104,7 +1104,10 @@ lambda { |s, name|
             # when that line was actually run; newer Ruby refuses the whole script.
             if msg =~ /\AInvalid (break|next|redo|retry)/
               w = $1
-              ln = ln.sub(/\b#{w}\b(?:[ \t]+(?!if\b|unless\b|while\b|until\b)[^#\n;]*?)?(?=[ \t]*(?:\bif\b|\bunless\b|\bend\b|#|;|\}|$))/) { "raise(LocalJumpError, '#{w} outside loop')" }
+              ln = ln.sub(/\b#{w}\b(?:[ \t]+(?!if\b|unless\b|while\b|until\b)[^#\n;]*?)?(?=[ \t]*(?:\bif\b|\bunless\b|\bend\b|#|;|\}|\)|:|$))/) { "raise(LocalJumpError, '#{w} outside loop')" }
+              if ln == orig && ln =~ /\b#{w}\b/
+                ln = ln.sub(/\b#{w}\b[^;#\n)]*/) { "raise(LocalJumpError, '#{w} outside loop')" }
+              end
             end
             # regex/string with raw high bytes such as \xff (invalid in UTF-8 source)
             if msg =~ /invalid multibyte/
@@ -1121,7 +1124,18 @@ lambda { |s, name|
       end
       $VERBOSE = old_verbose
       if last_err
-        ($__anyplay_syntax_errors ||= []) << "[#{name}]\n" + last_err.split("\n").first(8).join("\n")
+        src_lines = s.split("\n", -1)
+        detail = []
+        last_err.split("\n").each do |row|
+          next unless row.start_with?(prefix)
+          detail << row
+          if row[prefix.length..-1] =~ /\A(\d+):/
+            li = $1.to_i - 1
+            detail << "    >> " + src_lines[li].to_s.strip[0, 200] if li >= 0 && li < src_lines.size
+          end
+        end
+        detail = last_err.split("\n").first(8) if detail.empty?
+        ($__anyplay_syntax_errors ||= []) << "[#{name}]\n" + detail.first(24).join("\n")
       end
     end
     s
@@ -1156,7 +1170,7 @@ begin
   f = "AnyPlay_script_errors.txt"
   errs = $__anyplay_syntax_errors
   if errs && !errs.empty?
-    File.open(f, "w") { |io| io.puts("Scripts that could not be parsed (" + errs.size.to_s + "):\n\n" + errs.join("\n\n")) }
+    File.open(f, "w") { |io| io.puts("AnyPlay compat v4. Scripts that could not be parsed (" + errs.size.to_s + "):\n\n" + errs.join("\n\n")) }
   elsif File.exist?(f)
     File.delete(f)
   end
