@@ -1100,6 +1100,12 @@ lambda { |s, name|
               ind, cn, val = $1, $2, $3
               ln = "#{ind}Object.const_set(:#{cn}, (#{val}))" unless val.include?("#")
             end
+            # "break"/"next"/"redo"/"retry" with no loop or block around it: Ruby 1.8 only failed
+            # when that line was actually run; newer Ruby refuses the whole script.
+            if msg =~ /\AInvalid (break|next|redo|retry)/
+              w = $1
+              ln = ln.sub(/\b#{w}\b(?:[ \t]+(?!if\b|unless\b|while\b|until\b)[^#\n;]*?)?(?=[ \t]*(?:\bif\b|\bunless\b|\bend\b|#|;|\}|$))/) { "raise(LocalJumpError, '#{w} outside loop')" }
+            end
             # regex/string with raw high bytes such as \xff (invalid in UTF-8 source)
             if msg =~ /invalid multibyte/
               ln = ln.gsub(/\\x([89a-fA-F][0-9a-fA-F])/) { "\\u00#{$1}" }
