@@ -159,14 +159,9 @@ class CheatManager(
 
     /**
      * "Set" button on a value row. [name] is gold, level, exp, atk, def, mat,
-     * mdf, agi, luk, speed, item, weapon, armor. [b] is only used by
-     * item/weapon/armor (quantity).
+     * mdf, agi, luk or speed.
      */
-    fun setValue(name: String, a: String, b: String = "", onResult: (String) -> Unit) {
-        if (name == "item" || name == "weapon" || name == "armor") {
-            send("give\t$name\t${clean(a)}\t${clean(b)}", onResult)
-            return
-        }
+    fun setValue(name: String, a: String, onResult: (String) -> Unit) {
         send("value\t$name\t${clean(a)}") { msg ->
             if (name == "speed" && msg.startsWith("Speed x")) {
                 a.trim().toFloatOrNull()?.takeIf { it > 0f }?.let {
@@ -179,23 +174,30 @@ class CheatManager(
         }
     }
 
+    /** Gives the picked thing. [kind] is item / weapon / armor / pokemon, [amount] is the quantity (or the level for a Pokemon). */
+    fun give(kind: String, key: String, amount: String, onResult: (String) -> Unit) {
+        send("give\t$kind\t${clean(key)}\t${clean(amount)}", onResult)
+    }
+
     /** One-click button (maxExp, instantWin, fullInventory). */
     fun runAction(name: String, onResult: (String) -> Unit) {
         send("run\t$name", onResult)
     }
 
+    /** One thing the player can pick in the Give list. */
+    data class Pickable(val kind: String, val key: String, val name: String)
+
     /**
-     * Fetches [(id, name), ...] for "item" / "weapon" / "armor" from the
-     * running game so the picker can show real names. Empty list if the game
-     * isn't ready or has none of that kind.
+     * Fetches everything this game can give (items, weapons, armor, and for
+     * Pokemon games the Pokemon too) so the picker can show real names.
+     * Empty list if the game isn't ready.
      */
-    fun listItems(kind: String, onResult: (List<Pair<Int, String>>) -> Unit) {
-        send("list\t$kind") { raw ->
-            val out = mutableListOf<Pair<Int, String>>()
+    fun listPickables(onResult: (List<Pickable>) -> Unit) {
+        send("list\t") { raw ->
+            val out = mutableListOf<Pickable>()
             raw.lineSequence().forEach { line ->
-                val p = line.split('\t', limit = 2)
-                val id = p.getOrNull(0)?.trim()?.toIntOrNull()
-                if (id != null && p.size == 2) out.add(id to p[1])
+                val p = line.split('\t', limit = 3)
+                if (p.size == 3 && p[0].isNotBlank() && p[1].isNotBlank()) out.add(Pickable(p[0], p[1], p[2]))
             }
             onResult(out)
         }
