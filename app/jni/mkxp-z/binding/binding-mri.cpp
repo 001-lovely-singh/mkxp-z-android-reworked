@@ -1361,6 +1361,18 @@ module AnyPlayCompat
 end
 AnyPlayCompat.safe_dispose_patch
 
+# Some Essentials games (MKXP Compatibility Fix script) call
+# Graphics.mkxp_snap_to_bitmap, the old name of snap_to_bitmap.
+begin
+  class << Graphics
+    if respond_to?(:snap_to_bitmap) && !respond_to?(:mkxp_snap_to_bitmap)
+      alias_method :mkxp_snap_to_bitmap, :snap_to_bitmap
+    end
+  end
+rescue Exception
+end
+
+
 # Windows environment variables that games expect (TEMP for temp files, APPDATA
 # as a fallback save folder). On Android they are missing, so scripts crashed
 # with "no implicit conversion of nil into String".
@@ -1392,7 +1404,7 @@ end
 module AnyPlayLog
   @n = 0
   def self.write(msg)
-    return if @n > 200
+    return if @n > 400
     @n += 1
     File.__anyplay_open("AnyPlay_touch_log.txt", "a") { |f| f.puts(msg) }
   rescue Exception
@@ -1583,7 +1595,7 @@ module AnyPlayTouch
     # call stack of the code that called Graphics.update). Only the first taps.
     def diag_not_free
       @diag = (@diag || 0) + 1
-      return if @diag > 8
+      return if @diag > 12
       why = []
       why << "scene_not_map" unless scene_is_map?
       why << "msgwin" if ($game_temp.message_window_showing rescue false)
@@ -1591,7 +1603,29 @@ module AnyPlayTouch
       why << "interp" if (($game_system.map_interpreter.running? rescue false) || ($game_map.interpreter.running? rescue false))
       AnyPlayLog.write("  not free: #{why.join(',')} frame=#{(Graphics.frame_count rescue '?')}")
       caller(0).reject { |l| l =~ /\(eval|anyplay/i }.first(6).each { |l| AnyPlayLog.write("    at #{l}") }
+      diag_interp
     rescue Exception
+    end
+
+    # What is the map interpreter waiting for? (helps find stuck events)
+    def diag_interp
+      it = ($game_system.map_interpreter rescue nil) || ($game_map.interpreter rescue nil)
+      return unless it
+      ev = it.instance_variable_get(:@event_id)
+      idx = it.instance_variable_get(:@index)
+      list = it.instance_variable_get(:@list)
+      cmd = (list && idx && list[idx]) ? "code=#{list[idx].code} params=#{list[idx].parameters.inspect[0, 120]}" : "none"
+      AnyPlayLog.write("  interp: event=#{ev.inspect} index=#{idx.inspect} #{cmd}")
+      %w(@wait_count @move_route_waiting @message_waiting @button_input_variable_id @waiting_for_move_route @wait_for_move).each do |v|
+        next unless it.instance_variable_defined?(v)
+        AnyPlayLog.write("    #{v}=#{it.instance_variable_get(v).inspect}")
+      end
+      child = it.instance_variable_get(:@child_interpreter)
+      AnyPlayLog.write("    child_interpreter=#{child ? 'yes' : 'no'}") if it.instance_variable_defined?(:@child_interpreter)
+      ids = ($game_map.events.values.select { |e| e.respond_to?(:move_route_forcing) && e.move_route_forcing }.map { |e| e.id } rescue [])
+      AnyPlayLog.write("    forcing_move_route_events=#{ids.inspect} player_forcing=#{($game_player.move_route_forcing rescue '?')} player_moving=#{($game_player.moving? rescue '?')}")
+    rescue Exception => e
+      AnyPlayLog.write("  diag_interp failed: #{e.class} #{e.message[0, 60]}")
     end
 
     def on_tap(mx, my)
@@ -1863,7 +1897,9 @@ module AnyPlayCheats
       else "Unknown cheat command."
       end
     rescue Exception => e
-      "Cheat failed: #{e.class}: #{e.message[0, 80]}"
+      where = (e.backtrace || []).find { |l| l !~ /anyplay|\(eval/i }.to_s[0, 60]
+      AnyPlayLog.write("cheat #{cmd} #{a} #{b} failed: #{e.class}: #{e.message}\n  #{(e.backtrace || []).first(8).join("\n  ")}") rescue nil
+      "Cheat failed: #{e.class}: #{e.message[0, 70]} (#{where})"
     end
 
     def restore(speed, names)
