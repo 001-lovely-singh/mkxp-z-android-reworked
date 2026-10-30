@@ -87,6 +87,41 @@ class CheatManager(
     private var ready = false
     private var polling = false
 
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            val head = queue.firstOrNull()
+            if (head == null) {
+                polling = false
+                return
+            }
+            var answered = false
+            try {
+                if (replyFile.exists()) {
+                    val text = replyFile.readText()
+                    val parts = text.split('\t', limit = 2)
+                    if (parts[0].trim() == head.id.toString()) {
+                        replyFile.delete()
+                        queue.removeFirst()
+                        answered = true
+                        head.callback?.invoke(parts.getOrElse(1) { "" })
+                    } else if (parts[0].trim().toIntOrNull()?.let { it < head.id } == true) {
+                        replyFile.delete() // old answer, nobody waits for it
+                    }
+                }
+            } catch (e: Exception) {
+                // File still being written; try again next round.
+            }
+            if (!answered && head.deadline != 0L && System.currentTimeMillis() > head.deadline) {
+                queue.removeFirst()
+                cmdFile.delete()
+                head.callback?.invoke("The game didn't answer. Try again.")
+                answered = true
+            }
+            if (answered) pump()
+            handler.postDelayed(this, 80)
+        }
+    }
+
     init {
         cmdFile.delete()
         tmpFile.delete()
@@ -204,41 +239,6 @@ class CheatManager(
         if (polling) return
         polling = true
         handler.postDelayed(pollRunnable, 80)
-    }
-
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            val head = queue.firstOrNull()
-            if (head == null) {
-                polling = false
-                return
-            }
-            var answered = false
-            try {
-                if (replyFile.exists()) {
-                    val text = replyFile.readText()
-                    val parts = text.split('\t', limit = 2)
-                    if (parts[0].trim() == head.id.toString()) {
-                        replyFile.delete()
-                        queue.removeFirst()
-                        answered = true
-                        head.callback?.invoke(parts.getOrElse(1) { "" })
-                    } else if (parts[0].trim().toIntOrNull()?.let { it < head.id } == true) {
-                        replyFile.delete() // old answer, nobody waits for it
-                    }
-                }
-            } catch (e: Exception) {
-                // File still being written; try again next round.
-            }
-            if (!answered && head.deadline != 0L && System.currentTimeMillis() > head.deadline) {
-                queue.removeFirst()
-                cmdFile.delete()
-                head.callback?.invoke("The game didn't answer. Try again.")
-                answered = true
-            }
-            if (answered) pump()
-            handler.postDelayed(this, 80)
-        }
     }
 
     fun shutdown() {
