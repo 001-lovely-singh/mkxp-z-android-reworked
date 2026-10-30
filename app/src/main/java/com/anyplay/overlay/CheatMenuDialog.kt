@@ -143,9 +143,7 @@ class CheatMenuDialog(
                 initial = manager.speedMultiplier().toString()
             )
         )
-        content.addView(giveRow("Give Item", "item"))
-        content.addView(giveRow("Give Weapon", "weapon"))
-        content.addView(giveRow("Give Armor", "armor"))
+        content.addView(giveRow())
 
         // ---- One-click ----
         content.addView(sectionHeader("One-click"))
@@ -275,30 +273,57 @@ class CheatMenuDialog(
         }
     }
 
-    /** "Give Item ... [Pick] [ID] [Qty] [Give]" — ID is filled by the
-     *  picker (by name search) instead of the player having to know it. */
-    private fun giveRow(title: String, kind: String): View {
-        val id = numberInput("ID", false)
-        val qty = numberInput("Qty", false)
+    /**
+     * "Give": Pick opens one searchable list with everything this game can
+     * give (items, weapons, armor and, in Pokemon games, Pokemon). The amount
+     * box is the quantity, or the level when a Pokemon is picked.
+     */
+    private fun giveRow(): View {
+        var selKind = ""
+        var selKey = ""
+        val selected = TextView(activity).apply {
+            text = "Nothing picked yet"
+            setTextColor(hintColor)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            maxLines = 2
+        }
+        val amount = numberInput("Qty / Lv", false)
         val pick = pillButton("Pick") {
-            showItemPicker(kind) { pickedId, pickedName ->
-                id.setText(pickedId.toString())
-                toast("Selected: $pickedName")
+            showItemPicker { p ->
+                selKind = p.kind
+                selKey = p.key
+                selected.text = "${kindTitle(p.kind)}: ${p.name}"
+                selected.setTextColor(textColor)
+                if (p.kind == "pokemon") toast("Type the level in the amount box, then Give.")
             }
         }
         val give = pillButton("Give") {
-            manager.setValue(kind, id.text.toString(), qty.text.toString()) { msg -> toast(msg) }
+            if (selKey.isEmpty()) toast("Pick something first (use Pick).")
+            else manager.give(selKind, selKey, amount.text.toString()) { msg -> toast(msg) }
         }
-        return rowContainer().apply {
-            addView(label(title), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val top = rowContainer().apply {
+            addView(label("Give item / Pokémon"), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(pick)
-            addView(spacer())
-            addView(id, LinearLayout.LayoutParams(px(52), ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(spacer())
-            addView(qty, LinearLayout.LayoutParams(px(52), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val bottom = rowContainer().apply {
+            addView(selected, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(amount, LinearLayout.LayoutParams(px(84), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(spacer())
             addView(give)
         }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(top)
+            addView(bottom)
+        }
+    }
+
+    private fun kindTitle(kind: String) = when (kind) {
+        "item" -> "Item"
+        "weapon" -> "Weapon"
+        "armor" -> "Armor"
+        "pokemon" -> "Pokémon"
+        else -> kind
     }
 
     /**
@@ -307,20 +332,23 @@ class CheatMenuDialog(
      * its (id, name) and closes the picker — [onPick] is where the
      * caller fills the ID field, so the player never has to know it.
      */
-    private fun showItemPicker(kind: String, onPick: (Int, String) -> Unit) {
+    private fun showItemPicker(onPick: (CheatManager.Pickable) -> Unit) {
         val loadingToast = Toast.makeText(activity, "Loading items…", Toast.LENGTH_SHORT)
         loadingToast.show()
 
-        manager.listItems(kind) { items ->
+        manager.listPickables { items ->
             loadingToast.cancel()
             if (items.isEmpty()) {
                 toast("No items found. Start or load a game first, or this kind of item doesn't exist in this type of game.")
-                return@listItems
+                return@listPickables
             }
 
             // "#12  Potion" — the id prefix keeps entries unique even if
             // two items share a name, and lets the player see the ID too.
-            val entries = items.map { "#${it.first}  ${it.second}" }
+            val entries = items.map {
+                val shown = if (it.key.toIntOrNull() != null) "#${it.key}  ${it.name}" else "${it.name}  (${it.key})"
+                "[${kindTitle(it.kind)}] $shown"
+            }
             val adapter = object : ArrayAdapter<String>(activity, android.R.layout.simple_list_item_1, entries.toMutableList()) {
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val view = super.getView(position, convertView, parent) as TextView
@@ -334,7 +362,7 @@ class CheatMenuDialog(
             val listView = ListView(activity).apply { this.adapter = adapter }
 
             val search = EditText(activity).apply {
-                hint = "Search item name…"
+                hint = "Search by name…"
                 setHintTextColor(hintColor)
                 setTextColor(textColor)
                 setSingleLine(true)
@@ -368,7 +396,7 @@ class CheatMenuDialog(
                 setPadding(px(12), px(12), px(12), px(8))
                 addView(
                     TextView(activity).apply {
-                        text = "Select item"
+                        text = "Select"
                         setTextColor(textColor)
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
                         typeface = Typeface.DEFAULT_BOLD
@@ -396,7 +424,7 @@ class CheatMenuDialog(
                 // by `pos`, since filtering changes which index is which.
                 val shown = adapter.getItem(pos)
                 val original = entries.indexOf(shown)
-                if (original >= 0) onPick(items[original].first, items[original].second)
+                if (original >= 0) onPick(items[original])
                 closePicker()
             }
 
