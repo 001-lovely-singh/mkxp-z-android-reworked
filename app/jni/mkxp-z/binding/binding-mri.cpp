@@ -975,63 +975,16 @@ static void runRMXPScripts(BacktraceData &btData) {
     if (exc != Qnil)
         return;
     
-    while (true) {
-        for (long i = 0; i < scriptCount; ++i) {
-            VALUE script = rb_ary_entry(scriptArray, i);
-            VALUE scriptDecoded = rb_ary_entry(script, 3);
-            VALUE string =
-            newStringUTF8(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
-            
-            VALUE fname;
-            const char *scriptName = RSTRING_PTR(rb_ary_entry(script, 1));
-            char buf[512];
-            int len;
-            
-            if (conf.useScriptNames)
-                len = snprintf(buf, sizeof(buf), "%03ld:%s", i, scriptName);
-            else
-                len = snprintf(buf, sizeof(buf), SCRIPT_SECTION_FMT, i);
-            
-            fname = newStringUTF8(buf, len);
-            btData.scriptNames.insert(buf, scriptName);
-            
-            
-            // if the script name starts with |s|, only execute
-            // it if "s" is the same first letter as the platform
-            // we're running on
-            
-            // |W| - Windows, |M| - Mac OS X, |L| - Linux
-            
-            // Adding a 'not' symbol means it WON'T run on that
-            // platform (i.e. |!W| won't run on Windows)
-            /*
-             if (scriptName[0] == '|') {
-             int len = strlen(scriptName);
-             if (len > 2) {
-             if (scriptName[1] == '!' && len > 3 &&
-             scriptName[3] == scriptName[0]) {
-             if (toupper(scriptName[2]) == platform[0])
-             continue;
-             }
-             if (scriptName[2] == scriptName[0] &&
-             toupper(scriptName[1]) != platform[0])
-             continue;
-             }
-             }
-             */
-            
-            int state;
-            
 #ifdef __ANDROID__
-            // AnyPlay: old RPG Maker games were written for Ruby 1.8, which
-            // allowed "Foo.new (a, b)" (space before the bracket). Modern Ruby
-            // rejects that as a SyntaxError, so remove the space first.
-            // Also: the byte range \x7f-\x9f in a regex is invalid in UTF-8 source,
-            // so write it as the matching unicode range instead.
-            {
-                static VALUE compatFix = Qnil;
-                if (compatFix == Qnil) {
-                    rb_eval_string(R"RB(
+    // AnyPlay: old RPG Maker games were written for Ruby 1.8. Before running anything,
+    // every script is repaired for known Ruby 1.8-only syntax and checked with Ruby's
+    // parser. Whatever still can't be parsed is written, ALL at once, to
+    // AnyPlay_script_errors.txt in the game folder (so one test run shows every problem).
+    VALUE fixedScripts = Qnil;
+    {
+        static VALUE compatFix = Qnil;
+        if (compatFix == Qnil) {
+            rb_eval_string(R"RB(
 # Ruby 1.8 accepted `return` inside a top-level `proc{ ... }`; Ruby 3 raises
 # LocalJumpError. Rewrite `return` (bare or before if/unless) in such procs to
 # a catch/throw pair, without changing line numbers.
@@ -1095,21 +1048,169 @@ $__anyplay_fix_proc_return = lambda { |s|
   out
 }
 )RB");
-                    compatFix = rb_eval_string(R"RB(
-lambda { |s|
+            compatFix = rb_eval_string(R"RB(
+lambda { |s, name|
   begin
     s = $__anyplay_fix_proc_return.call(s) if $__anyplay_fix_proc_return
     s = s.gsub(/\.new[ \t]+\(/, '.new(')
+    # Ruby 1.8 allowed "when 0:" (colon instead of "then"); Ruby 1.9+ does not.
+    s = s.gsub(/^([ \t]*when\b[^\n#]*?[\w)\]"'])[ \t]*:(?!:)(?=[ \t]*(?:#|\r?$))/) { "#{$1} then" }
+    s = s.gsub(/^([ \t]*when\b[^\n#]*?[\w)\]"']):[ \t]+(?=[^\s#])/) { "#{$1} then " }
     s = s.gsub('\x7f-\x9f') { '\u007f-\u009f' }
+
+    # Self-healing: ask Ruby's parser whether the script is valid. If not, fix the
+    # reported lines (only those) for known Ruby 1.8-only syntax and try again.
+    if defined?(RubyVM::InstructionSequence)
+      kw = %w(if elsif unless while until and or not then do case when return yield rescue in begin else ensure end super defined? puts_ )
+      prefix = name.to_s + ":"
+      old_verbose = $VERBOSE
+      $VERBOSE = nil
+      last_err = nil
+      9.times do
+        last_err = nil
+        begin
+          RubyVM::InstructionSequence.compile(s, name.to_s)
+        rescue SyntaxError => e
+          last_err = e.message
+        rescue Exception
+          break
+        end
+        break unless last_err
+        lines = s.split("\n", -1)
+        changed = false
+        last_err.split("\n").each do |row|
+          next unless row.start_with?(prefix)
+          rest = row[prefix.length..-1]
+          next unless rest =~ /\A(\d+):\s*(.*)\z/
+          idx = $1.to_i - 1
+          msg = $2
+          next if idx < 0 || idx >= lines.size
+          [idx, idx - 1].each do |k|
+            next if k < 0
+            ln = lines[k]
+            orig = ln.dup
+            # "foo (a, b)" / "Foo.new (a, b)": remove the space before the bracket
+            ln = ln.gsub(/([A-Za-z_][A-Za-z0-9_]*[?!]?)[ \t]+\(/) { kw.include?($1) ? $& : "#{$1}(" }
+            # "when 1, 2:" and friends
+            if ln =~ /^[ \t]*when\b/ && msg =~ /unexpected ':'|unexpected `when'|unexpected '\n'/
+              ln = ln.sub(/([\w)\]"'])[ \t]*:(?!:)(?=[ \t]*(?:#|$|\S))/) { "#{$1} then" }
+            end
+            # constants assigned inside a method (allowed in Ruby 1.8)
+            if msg =~ /dynamic constant assignment/ && ln =~ /\A([ \t]*)([A-Z][A-Za-z0-9_]*)[ \t]*=[ \t]*(.+?)[ \t]*\z/
+              ind, cn, val = $1, $2, $3
+              ln = "#{ind}Object.const_set(:#{cn}, (#{val}))" unless val.include?("#")
+            end
+            # regex/string with raw high bytes such as \xff (invalid in UTF-8 source)
+            if msg =~ /invalid multibyte/
+              ln = ln.gsub(/\\x([89a-fA-F][0-9a-fA-F])/) { "\\u00#{$1}" }
+            end
+            if ln != orig
+              lines[k] = ln
+              changed = true
+            end
+          end
+        end
+        break unless changed
+        s = lines.join("\n")
+      end
+      $VERBOSE = old_verbose
+      if last_err
+        ($__anyplay_syntax_errors ||= []) << "[#{name}]\n" + last_err.split("\n").first(8).join("\n")
+      end
+    end
     s
   rescue Exception
     s
   end
 }
 )RB");
-                    rb_gc_register_address(&compatFix);
-                }
-                VALUE fixed = rb_funcall(compatFix, rb_intern("call"), 1, string);
+            rb_gc_register_address(&compatFix);
+        }
+        rb_eval_string("$__anyplay_syntax_errors = []");
+        fixedScripts = rb_ary_new();
+        for (long i = 0; i < scriptCount; ++i) {
+            VALUE script = rb_ary_entry(scriptArray, i);
+            VALUE scriptDecoded = rb_ary_entry(script, 3);
+            VALUE string =
+            newStringUTF8(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
+            const char *scriptName = RSTRING_PTR(rb_ary_entry(script, 1));
+            char nbuf[512];
+            int nlen;
+            if (conf.useScriptNames)
+                nlen = snprintf(nbuf, sizeof(nbuf), "%03ld:%s", i, scriptName);
+            else
+                nlen = snprintf(nbuf, sizeof(nbuf), SCRIPT_SECTION_FMT, i);
+            VALUE nameStr = newStringUTF8(nbuf, nlen);
+            VALUE args[2] = { string, nameStr };
+            VALUE fixed = rb_funcall2(compatFix, rb_intern("call"), 2, args);
+            rb_ary_push(fixedScripts, fixed == Qnil ? string : fixed);
+        }
+        rb_eval_string(R"RB(
+begin
+  f = "AnyPlay_script_errors.txt"
+  errs = $__anyplay_syntax_errors
+  if errs && !errs.empty?
+    File.open(f, "w") { |io| io.puts("Scripts that could not be parsed (" + errs.size.to_s + "):\n\n" + errs.join("\n\n")) }
+  elsif File.exist?(f)
+    File.delete(f)
+  end
+rescue Exception
+end
+)RB");
+    }
+#endif
+
+    while (true) {
+        for (long i = 0; i < scriptCount; ++i) {
+            VALUE script = rb_ary_entry(scriptArray, i);
+            VALUE scriptDecoded = rb_ary_entry(script, 3);
+            VALUE string =
+            newStringUTF8(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
+            
+            VALUE fname;
+            const char *scriptName = RSTRING_PTR(rb_ary_entry(script, 1));
+            char buf[512];
+            int len;
+            
+            if (conf.useScriptNames)
+                len = snprintf(buf, sizeof(buf), "%03ld:%s", i, scriptName);
+            else
+                len = snprintf(buf, sizeof(buf), SCRIPT_SECTION_FMT, i);
+            
+            fname = newStringUTF8(buf, len);
+            btData.scriptNames.insert(buf, scriptName);
+            
+            
+            // if the script name starts with |s|, only execute
+            // it if "s" is the same first letter as the platform
+            // we're running on
+            
+            // |W| - Windows, |M| - Mac OS X, |L| - Linux
+            
+            // Adding a 'not' symbol means it WON'T run on that
+            // platform (i.e. |!W| won't run on Windows)
+            /*
+             if (scriptName[0] == '|') {
+             int len = strlen(scriptName);
+             if (len > 2) {
+             if (scriptName[1] == '!' && len > 3 &&
+             scriptName[3] == scriptName[0]) {
+             if (toupper(scriptName[2]) == platform[0])
+             continue;
+             }
+             if (scriptName[2] == scriptName[0] &&
+             toupper(scriptName[1]) != platform[0])
+             continue;
+             }
+             }
+             */
+            
+            int state;
+            
+#ifdef __ANDROID__
+            // AnyPlay: use the script text that was checked / repaired in the pre-pass above
+            if (fixedScripts != Qnil) {
+                VALUE fixed = rb_ary_entry(fixedScripts, i);
                 if (fixed != Qnil)
                     string = fixed;
             }
@@ -1383,6 +1484,33 @@ begin
   [__ap_tmp, __ap_files].each { |d| (Dir.mkdir(d) unless File.directory?(d)) rescue nil }
   %w(TEMP TMP TMPDIR).each { |k| ENV[k] = __ap_tmp if ENV[k].nil? || ENV[k].empty? }
   %w(APPDATA LOCALAPPDATA).each { |k| ENV[k] = __ap_files if ENV[k].nil? || ENV[k].empty? }
+rescue Exception
+end
+
+
+# Small helpers that Ruby 1.8 had and modern Ruby removed. Only added when missing.
+begin
+  class Array
+    def nitems; count { |x| !x.nil? }; end unless method_defined?(:nitems)
+    def choice; sample; end unless method_defined?(:choice)
+  end
+  class Hash
+    def index(v); key(v); end unless method_defined?(:index)
+  end
+  module Enumerable
+    def enum_with_index(*a, &b); each_with_index(*a, &b); end unless method_defined?(:enum_with_index)
+  end
+  # "require 'jcode'" (Japanese string helpers) no longer exists; the game does not need it.
+  module Kernel
+    alias_method :__anyplay_require, :require
+    def require(name)
+      __anyplay_require(name)
+    rescue LoadError
+      raise unless %w(jcode kconv nkf).include?(name.to_s)
+      false
+    end
+    private :require
+  end
 rescue Exception
 end
 
