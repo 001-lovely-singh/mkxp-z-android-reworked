@@ -1364,8 +1364,8 @@ AnyPlayCompat.safe_dispose_patch
 # Some Essentials games (MKXP Compatibility Fix script) call
 # Graphics.mkxp_snap_to_bitmap, the old name of snap_to_bitmap.
 begin
-  class << Graphics
-    if respond_to?(:snap_to_bitmap) && !respond_to?(:mkxp_snap_to_bitmap)
+  if Graphics.respond_to?(:snap_to_bitmap) && !Graphics.respond_to?(:mkxp_snap_to_bitmap)
+    class << Graphics
       alias_method :mkxp_snap_to_bitmap, :snap_to_bitmap
     end
   end
@@ -1624,8 +1624,27 @@ module AnyPlayTouch
       AnyPlayLog.write("    child_interpreter=#{child ? 'yes' : 'no'}") if it.instance_variable_defined?(:@child_interpreter)
       ids = ($game_map.events.values.select { |e| e.respond_to?(:move_route_forcing) && e.move_route_forcing }.map { |e| e.id } rescue [])
       AnyPlayLog.write("    forcing_move_route_events=#{ids.inspect} player_forcing=#{($game_player.move_route_forcing rescue '?')} player_moving=#{($game_player.moving? rescue '?')}")
+      diag_route($game_player, "player")
+      diag_route(($game_map.events[ev] rescue nil), "event#{ev}")
     rescue Exception => e
       AnyPlayLog.write("  diag_interp failed: #{e.class} #{e.message[0, 60]}")
+    end
+
+    # Why is a forced move route not finishing?
+    def diag_route(ch, label)
+      return unless ch && ch.instance_variable_get(:@move_route_forcing)
+      r = ch.instance_variable_get(:@move_route)
+      i = ch.instance_variable_get(:@move_route_index)
+      c = r && r.list[i]
+      d = ch.direction
+      dx = { 2 => 0, 4 => -1, 6 => 1, 8 => 0 }[d].to_i
+      dy = { 2 => 1, 4 => 0, 6 => 0, 8 => -1 }[d].to_i
+      AnyPlayLog.write("    #{label}: pos=#{ch.x},#{ch.y} dir=#{d} idx=#{i}/#{r && r.list.size} cmd=#{c ? c.code : 'nil'} #{c ? c.parameters.inspect[0, 60] : ''} skippable=#{r && r.skippable} repeat=#{r && r.repeat}")
+      AnyPlayLog.write("    #{label}: wait=#{ch.instance_variable_get(:@wait_count).inspect} stop=#{ch.instance_variable_get(:@stop_count).inspect} moving=#{ch.moving?} jumping=#{ch.jumping?} through=#{ch.through} passable_dir=#{(ch.passable?(ch.x, ch.y, d) rescue 'err')}")
+      evs = ($game_map.events.values.select { |e| e.x == ch.x + dx && e.y == ch.y + dy }.map { |e| "#{e.id}(through=#{e.through})" } rescue [])
+      AnyPlayLog.write("    #{label}: front=#{ch.x + dx},#{ch.y + dy} events_in_front=#{evs.inspect} map=#{($game_map.map_id rescue '?')}")
+    rescue Exception => e
+      AnyPlayLog.write("  diag_route failed: #{e.class} #{e.message[0, 60]}")
     end
 
     def on_tap(mx, my)
