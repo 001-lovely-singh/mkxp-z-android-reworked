@@ -1392,7 +1392,7 @@ end
 module AnyPlayLog
   @n = 0
   def self.write(msg)
-    return if @n > 60
+    return if @n > 200
     @n += 1
     File.__anyplay_open("AnyPlay_touch_log.txt", "a") { |f| f.puts(msg) }
   rescue Exception
@@ -1579,10 +1579,26 @@ module AnyPlayTouch
     rescue Exception
     end
 
+    # Writes WHY the map is not free and where the game is waiting (the Ruby
+    # call stack of the code that called Graphics.update). Only the first taps.
+    def diag_not_free
+      @diag = (@diag || 0) + 1
+      return if @diag > 8
+      why = []
+      why << "scene_not_map" unless scene_is_map?
+      why << "msgwin" if ($game_temp.message_window_showing rescue false)
+      why << "gmsg" if ($game_message.visible rescue false)
+      why << "interp" if (($game_system.map_interpreter.running? rescue false) || ($game_map.interpreter.running? rescue false))
+      AnyPlayLog.write("  not free: #{why.join(',')} frame=#{(Graphics.frame_count rescue '?')}")
+      caller(0).reject { |l| l =~ /\(eval|anyplay/i }.first(6).each { |l| AnyPlayLog.write("    at #{l}") }
+    rescue Exception
+    end
+
     def on_tap(mx, my)
       @route = []; @face = nil; @dir = nil; @expect = nil
       AnyPlayLog.write("tap #{mx},#{my} scene=#{(defined?(SceneManager) ? SceneManager.scene : $scene).class} free=#{map_free?} player=#{($game_player.x rescue '?')},#{($game_player.y rescue '?')}")
       unless map_free?
+        diag_not_free
         @press_c = 4          # dialogs, menus, title: tap = confirm
         return
       end
