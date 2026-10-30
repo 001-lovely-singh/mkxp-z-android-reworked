@@ -339,7 +339,7 @@ class CheatMenuDialog(
         manager.listPickables { items ->
             loadingToast.cancel()
             if (items.isEmpty()) {
-                toast("No items found. Start or load a game first, or this kind of item doesn't exist in this type of game.")
+                toast("This kind of item doesn't exist in this game.")
                 return@listPickables
             }
 
