@@ -42,6 +42,13 @@ static std::string convertString(std::string &str) {
     
     iconv_t cd = iconv_open("UTF-8", charset.c_str());
     
+    // AnyPlay fix: iconv_open returns (iconv_t)-1 when the guessed charset is
+    // not supported. Calling iconv() with that handle crashes (SIGSEGV at
+    // address 0xffffffffffffffff), e.g. on a mkxp.json that only has one
+    // accented letter ("Pokémon"). Keep the text as it is instead.
+    if (cd == (iconv_t)-1)
+        return std::string(str);
+    
     size_t inLen = str.size();
     size_t outLen = inLen * 4;
     std::string buf(outLen, '\0');
